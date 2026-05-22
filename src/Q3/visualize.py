@@ -8,7 +8,13 @@ Generates: training curves (loss & accuracy), confusion matrix heatmap.
 
 from pathlib import Path
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+
+# Use CJK-compatible font on Windows to render Chinese labels
+# 使用支持中文的字体以正确显示中文标签
+mpl.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
+mpl.rcParams["axes.unicode_minus"] = False  # Fix minus sign rendering / 修复负号显示
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
