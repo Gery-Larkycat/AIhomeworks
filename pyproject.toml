@@ -1,0 +1,18 @@
+[project]
+name = "aihomeworks"
+version = "0.1.0"
+description = "AI homeworks with PyTorch"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "matplotlib",
+    "numpy",
+    "pytest",
+]
+
+# PyTorch CUDA 12.4 wheel index / PyTorch CUDA 12.4 轮子索引
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
