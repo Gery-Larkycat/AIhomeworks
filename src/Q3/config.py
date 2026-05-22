@@ -158,8 +158,11 @@ class HyperparamRange:
 @dataclass(frozen=True)
 class SearchConfig:
     """
-    Configuration for evolutionary hyperparameter search.
-    进化超参数搜索配置。
+    Configuration for hyperparameter search.
+    超参数搜索配置。
+
+    Supports three strategies: evolutionary, random, grid.
+    支持三种策略：演化搜索、随机搜索、网格搜索。
 
     All search-related settings live here. Set any parameter range to None to
     exclude it from the search. search.py reads from this config exclusively.
@@ -167,13 +170,24 @@ class SearchConfig:
     search.py 仅从此配置读取搜索空间。
     """
 
-    # -- Evolutionary algorithm / 演化算法参数 --
+    # -- Strategy / 搜索策略 --
+    strategy: str = "random"  # "evolutionary", "random", "grid"
+
+    # -- Shared / 共享参数 --
     search_epochs: int = 5  # Epochs per individual evaluation / 每个个体的训练轮数
+
+    # -- Evolutionary algorithm / 演化算法参数 --
     population_size: int = 8  # μ: number of parents / 种群大小
     offspring_per_gen: int = 4  # λ: offspring per generation / 每代后代数
     num_generations: int = 3  # G: number of generations / 演化代数
     tournament_size: int = 3  # Tournament selection size / 锦标赛选择大小
     mutation_rate: float = 0.25  # Per-gene mutation probability / 逐基因变异概率
+
+    # -- Random search / 随机搜索参数 --
+    num_trials: int = 10  # Number of random evaluations / 随机评估次数
+
+    # -- Grid search / 网格搜索参数 --
+    grid_num_points: int = 5  # Points per continuous dimension / 每个连续维度的采样点数
 
     # -- Continuous params (set None to skip) / 连续参数（设 None 跳过）--
     learning_rate: HyperparamRange | None = HyperparamRange(1e-4, 1.0, "log_uniform")

@@ -1,6 +1,11 @@
 """
 Tests for hyperparameter search, factory functions, and search config.
 超参数搜索、工厂函数和搜索配置的测试。
+
+Covers: evolutionary search, random search, grid search, grid generation,
+fitness computation, evolutionary operators, result logging.
+覆盖：演化搜索、随机搜索、网格搜索、网格生成、适应度计算、
+演化算子、结果记录。
 """
 
 import dataclasses
@@ -20,10 +25,13 @@ from src.Q3.search import (
     compute_fitness,
     crossover,
     evolutionary_search,
+    generate_grid,
+    grid_search,
     load_best_search_params,
     log_search_results,
     loss_decrease_rate,
     mutate,
+    random_search,
     sample_individual,
     sample_log_uniform,
     tournament_select,
@@ -1087,3 +1095,405 @@ class TestResultLogging:
         )
         result = load_best_search_params(config)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Random search tests / 随机搜索测试
+# ---------------------------------------------------------------------------
+
+
+class TestRandomSearch:
+    """Random search integration tests."""
+
+    def test_minimal_random_search(self):
+        """最小化随机搜索运行成功。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="random",
+            num_trials=3,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        best_params, all_records = random_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        assert isinstance(best_params, dict)
+        assert len(all_records) == 3
+        assert "learning_rate" in best_params
+        assert "optimizer_type" in best_params
+        for rec in all_records:
+            assert "fitness" in rec
+            assert "params" in rec
+            assert math.isfinite(rec["fitness"])
+
+    def test_random_search_finds_best(self):
+        """随机搜索能追踪最优参数。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="random",
+            num_trials=4,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        best_params, all_records = random_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        # best_params should match the record with highest fitness
+        # best_params 应与 fitness 最高的记录匹配
+        best_rec = max(all_records, key=lambda r: r["fitness"])
+        assert best_params["learning_rate"] == best_rec["params"]["learning_rate"]
+
+    def test_random_search_all_generation_zero(self):
+        """随机搜索所有记录的 generation 为 0。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="random",
+            num_trials=2,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        _, all_records = random_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        for rec in all_records:
+            assert rec["generation"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Grid generation tests / 网格生成测试
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateGrid:
+    """Test grid point generation."""
+
+    def test_grid_size_with_all_params(self):
+        """所有参数启用时网格大小正确。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=3,
+            # 3 * 3 * 3 * 4 * 5 * 3 = 1620
+        )
+        grid = generate_grid(cfg)
+        assert len(grid) == 3 * 3 * 3 * 4 * 5 * 3
+
+    def test_grid_size_reduced_space(self):
+        """缩小搜索空间后网格大小减小。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=3,
+            batch_size=(128, 256),
+            optimizer_type=("sgd", "adam"),
+            scheduler_type=("cosine",),
+        )
+        grid = generate_grid(cfg)
+        # 3 * 3 * 3 * 2 * 2 * 1 = 108
+        assert len(grid) == 108
+
+    def test_grid_continuous_values_in_range(self):
+        """网格连续参数值在合法范围内。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=5,
+        )
+        grid = generate_grid(cfg)
+        for params in grid:
+            assert 1e-4 <= params["learning_rate"] <= 1.0
+            assert 1e-6 <= params["weight_decay"] <= 1e-2
+            assert 0.8 <= params["momentum"] <= 0.99
+
+    def test_grid_log_uniform_spacing(self):
+        """log_uniform 参数在对数空间中等距。"""
+        import math
+
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=5,
+            momentum=None,
+            batch_size=None,
+            optimizer_type=None,
+            scheduler_type=None,
+        )
+        grid = generate_grid(cfg)
+        # Extract unique learning_rate values
+        lr_vals = sorted(set(p["learning_rate"] for p in grid))
+        assert len(lr_vals) == 5
+        # Check log-spacing: consecutive ratios should be ~equal
+        # 检查对数间距：相邻比值应近似相等
+        log_ratios = [
+            math.log10(lr_vals[i + 1]) - math.log10(lr_vals[i])
+            for i in range(len(lr_vals) - 1)
+        ]
+        mean_ratio = sum(log_ratios) / len(log_ratios)
+        for r in log_ratios:
+            assert abs(r - mean_ratio) < 1e-10
+
+    def test_grid_uniform_spacing(self):
+        """uniform 参数在线性空间中等距。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=4,
+            learning_rate=None,
+            weight_decay=None,
+            batch_size=None,
+            optimizer_type=None,
+            scheduler_type=None,
+        )
+        grid = generate_grid(cfg)
+        mom_vals = sorted(set(p["momentum"] for p in grid))
+        assert len(mom_vals) == 4
+        # Linear spacing / 线性间距
+        diffs = [mom_vals[i + 1] - mom_vals[i] for i in range(len(mom_vals) - 1)]
+        mean_diff = sum(diffs) / len(diffs)
+        for d in diffs:
+            assert abs(d - mean_diff) < 1e-10
+
+    def test_grid_discrete_values_match_config(self):
+        """离散参数值来自配置中的候选列表。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=2,
+            batch_size=(128, 256),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine", "step"),
+        )
+        grid = generate_grid(cfg)
+        for params in grid:
+            assert params["batch_size"] in (128, 256)
+            assert params["optimizer_type"] == "sgd"
+            assert params["scheduler_type"] in ("cosine", "step")
+
+    def test_grid_single_point(self):
+        """grid_num_points=1 时连续参数只有一个值。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=1,
+            batch_size=None,
+            optimizer_type=None,
+            scheduler_type=None,
+        )
+        grid = generate_grid(cfg)
+        # 3 continuous params, each with 1 value → 1^3 = 1 point
+        # 3 个连续参数各 1 个值 → 1^3 = 1 个点
+        assert len(grid) == 1
+        assert grid[0]["learning_rate"] == cfg.learning_rate.low
+        assert grid[0]["weight_decay"] == cfg.weight_decay.low
+
+    def test_grid_with_disabled_params(self):
+        """设 None 的参数不出现在网格中。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=3,
+            learning_rate=None,
+            weight_decay=None,
+            momentum=None,
+            batch_size=(128, 256),
+            optimizer_type=("sgd",),
+            scheduler_type=None,
+        )
+        grid = generate_grid(cfg)
+        # Only batch_size has 2 options
+        assert len(grid) == 2
+        for params in grid:
+            assert "learning_rate" not in params
+            assert "weight_decay" not in params
+            assert "momentum" not in params
+
+    def test_grid_covers_endpoints(self):
+        """网格包含搜索空间的端点值。"""
+        cfg = dataclasses.replace(
+            SearchConfig(),
+            grid_num_points=5,
+            momentum=None,
+            batch_size=None,
+            optimizer_type=None,
+            scheduler_type=None,
+        )
+        grid = generate_grid(cfg)
+        lr_vals = sorted(set(p["learning_rate"] for p in grid))
+        assert abs(lr_vals[0] - 1e-4) < 1e-10
+        assert abs(lr_vals[-1] - 1.0) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# Grid search tests / 网格搜索测试
+# ---------------------------------------------------------------------------
+
+
+class TestGridSearch:
+    """Grid search integration tests."""
+
+    def test_minimal_grid_search(self):
+        """最小化网格搜索运行成功。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="grid",
+            grid_num_points=2,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        best_params, all_records = grid_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        # 2 * 2 * 2 * 1 * 1 * 1 = 8 grid points
+        assert len(all_records) == 8
+        assert isinstance(best_params, dict)
+        assert "learning_rate" in best_params
+
+    def test_grid_search_exhaustive(self):
+        """网格搜索穷举所有组合。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="grid",
+            grid_num_points=2,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd", "adam"),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        best_params, all_records = grid_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        # 2 * 2 * 2 * 1 * 2 * 1 = 16 points
+        assert len(all_records) == 16
+        # Verify all optimizer types appear / 验证两种优化器都出现
+        opts_seen = {
+            r["params"]["optimizer_type"] for r in all_records
+        }
+        assert opts_seen == {"sgd", "adam"}
+
+    def test_grid_search_best_tracked(self):
+        """网格搜索正确追踪最优参数。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="grid",
+            grid_num_points=2,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        best_params, all_records = grid_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        best_rec = max(all_records, key=lambda r: r["fitness"])
+        assert best_params["learning_rate"] == best_rec["params"]["learning_rate"]
+
+    def test_grid_search_all_generation_zero(self):
+        """网格搜索所有记录的 generation 为 0。"""
+        config = TrainConfig()
+        search_cfg = dataclasses.replace(
+            SearchConfig(),
+            strategy="grid",
+            grid_num_points=2,
+            search_epochs=1,
+            batch_size=(16,),
+            optimizer_type=("sgd",),
+            scheduler_type=("cosine",),
+        )
+        train_loader, test_loader = _make_synthetic_loaders(
+            batch_size=16
+        )
+        loaders_by_batch = {16: (train_loader, test_loader)}
+        device = torch.device("cpu")
+
+        _, all_records = grid_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+
+        for rec in all_records:
+            assert rec["generation"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Strategy dispatch tests / 策略分派测试
+# ---------------------------------------------------------------------------
+
+
+class TestSearchConfigStrategy:
+    """Test SearchConfig strategy field."""
+
+    def test_default_strategy_is_evolutionary(self):
+        """默认策略为演化搜索。"""
+        cfg = SearchConfig()
+        assert cfg.strategy == "evolutionary"
+
+    def test_strategy_random(self):
+        """可设置策略为随机搜索。"""
+        cfg = dataclasses.replace(SearchConfig(), strategy="random")
+        assert cfg.strategy == "random"
+        assert cfg.num_trials == 20
+
+    def test_strategy_grid(self):
+        """可设置策略为网格搜索。"""
+        cfg = dataclasses.replace(SearchConfig(), strategy="grid")
+        assert cfg.strategy == "grid"
+        assert cfg.grid_num_points == 5
+
+    def test_random_search_config_defaults(self):
+        """随机搜索默认值合理。"""
+        cfg = dataclasses.replace(SearchConfig(), strategy="random")
+        assert cfg.num_trials == 20
+        assert cfg.search_epochs == 5
+
+    def test_grid_search_config_defaults(self):
+        """网格搜索默认值合理。"""
+        cfg = dataclasses.replace(SearchConfig(), strategy="grid")
+        assert cfg.grid_num_points == 5
+        assert cfg.search_epochs == 5

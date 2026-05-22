@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--search", action="store_true",
         help=(
-            "Run evolutionary hyperparameter search,"
+            "Run hyperparameter search,"
             " then train with best params"
             " / 先搜索再用最优配置训练"
         ),
@@ -88,6 +88,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Only run search, save results, and exit"
             " / 仅运行搜索并报告结果"
+        ),
+    )
+    parser.add_argument(
+        "--search-strategy",
+        choices=["evolutionary", "random", "grid"],
+        default=None,
+        help=(
+            "Search strategy: evolutionary (default), random, grid"
+            " / 搜索策略：演化（默认）、随机、网格"
         ),
     )
     parser.add_argument(
@@ -103,6 +112,13 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Enable mixed precision (FP16) training"
             " / 启用混合精度训练"
+        ),
+    )
+    parser.add_argument(
+        "--no-augmentation", action="store_true",
+        help=(
+            "Disable data augmentation"
+            " / 禁用数据增强"
         ),
     )
     return parser.parse_args()
@@ -122,6 +138,11 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         overrides["learning_rate"] = args.lr
     if args.amp:
         overrides["use_amp"] = True
+    if args.no_augmentation:
+        from src.Q3.config import AugmentationConfig
+        overrides["augmentation"] = dataclasses.replace(
+            AugmentationConfig(), use_augmentation=False,
+        )
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
     return TrainConfig(**overrides)
@@ -167,10 +188,19 @@ def main() -> None:
 
     # ---- Hyperparameter search / 超参数搜索 ----
     if args.search or args.search_only:
+        from src.Q3.config import SearchConfig
         from src.Q3.search import run_search
 
+        # Build search config with strategy override
+        # 根据命令行参数构建搜索配置
+        search_overrides = {}
+        if args.search_strategy is not None:
+            search_overrides["strategy"] = args.search_strategy
+        search_cfg = SearchConfig(**search_overrides)
+
         best_params = run_search(
-            config, train_loader, test_loader
+            config, train_loader, test_loader,
+            search_cfg=search_cfg,
         )
 
         if args.search_only:

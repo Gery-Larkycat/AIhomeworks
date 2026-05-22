@@ -1,17 +1,24 @@
 """
-Evolutionary hyperparameter search for ResNet-18 on CIFAR-100.
-ResNet-18 CIFAR-100 进化超参数搜索。
+Hyperparameter search for ResNet-18 on CIFAR-100.
+ResNet-18 CIFAR-100 超参数搜索。
 
-Uses a (μ + λ) evolution strategy with tournament selection,
-BLX-α crossover, and Gaussian mutation on mixed continuous/discrete params.
-使用 (μ + λ) 演化策略，锦标赛选择、BLX-α 交叉和高斯变异，
-适用于混合连续/离散参数空间。
+Supports three strategies selected via SearchConfig.strategy:
+支持三种策略，通过 SearchConfig.strategy 选择：
+
+  - "evolutionary": (μ + λ) evolution strategy with tournament selection,
+    BLX-α crossover, and Gaussian mutation.
+    使用 (μ + λ) 演化策略，锦标赛选择、BLX-α 交叉和高斯变异。
+  - "random": Uniform random sampling from the search space.
+    从搜索空间均匀随机采样。
+  - "grid": Exhaustive Cartesian product over all parameter combinations.
+    对所有参数组合进行穷举笛卡尔积搜索。
 
 Search space is defined in config.SearchConfig; this module reads from it.
 搜索空间定义在 config.SearchConfig 中；本模块从中读取。
 """
 
 import dataclasses
+import itertools
 import json
 import math
 import random
@@ -510,6 +517,224 @@ def evolutionary_search(
 
 
 # ---------------------------------------------------------------------------
+# Random search / 随机搜索
+# ---------------------------------------------------------------------------
+
+def random_search(
+    base_config: TrainConfig,
+    search_cfg: SearchConfig,
+    loaders_by_batch: dict[int, tuple[DataLoader, DataLoader]],
+    device: torch.device,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """
+    Random search: sample num_trials random configs and evaluate each.
+    随机搜索：从搜索空间采样 num_trials 组随机配置并逐一评估。
+
+    Simple but effective baseline; often competitive with evolutionary
+    for low-dimensional search spaces.
+    简单有效的基线方法；在低维搜索空间中常与演化方法不相上下。
+
+    Returns (best_params_dict, all_evaluated_records).
+    返回 (最优参数字典, 所有评估记录列表)。
+    """
+    rng = random.Random(_BASE_SEED)
+    all_records: list[dict[str, object]] = []
+    best_fitness = float("-inf")
+    best_params: dict[str, object] = {}
+
+    print(f"\n--- Random Search: {search_cfg.num_trials} trials ---")
+
+    for i in range(search_cfg.num_trials):
+        params = sample_individual(search_cfg, rng)
+        bs = int(params.get("batch_size", base_config.batch_size))
+        train_loader, test_loader = loaders_by_batch[bs]
+
+        fitness, history = train_probe(
+            params, base_config, search_cfg,
+            train_loader, test_loader, device,
+            seed=_BASE_SEED + i,
+        )
+
+        # Track best / 追踪最优
+        if fitness > best_fitness:
+            best_fitness = fitness
+            best_params = dict(params)
+
+        eval_id = i + 1
+        record = _make_record(eval_id, 0, params, fitness, history)
+        all_records.append(record)
+        print(
+            f"  [{eval_id}/{search_cfg.num_trials}]"
+            f" fitness={fitness:.4f}"
+            f" | lr={params.get('learning_rate', 'N/A'):.4f}"
+            f" | opt={params.get('optimizer_type', 'N/A')}"
+            f" | bs={params.get('batch_size', 'N/A')}"
+        )
+
+    print(
+        f"\n  Random search best fitness: {best_fitness:.4f}"
+    )
+    return best_params, all_records
+
+
+# ---------------------------------------------------------------------------
+# Grid search / 网格搜索
+# ---------------------------------------------------------------------------
+
+def _linspace(start: float, stop: float, num: int) -> list[float]:
+    """
+    Generate num evenly-spaced values in [start, stop].
+    在 [start, stop] 中生成 num 个等距值。
+
+    Pure Python equivalent of numpy.linspace (avoids numpy dependency).
+    纯 Python 实现的 numpy.linspace（避免引入 numpy 依赖）。
+    """
+    if num == 1:
+        return [start]
+    step = (stop - start) / (num - 1)
+    return [start + step * i for i in range(num)]
+
+
+def _logspace(
+    log_start: float, log_stop: float, num: int,
+) -> list[float]:
+    """
+    Generate num values evenly-spaced in log10 space.
+    在 log10 空间中生成 num 个等距值。
+
+    Equivalent to 10 ** numpy.linspace(log_start, log_stop, num).
+    等价于 10 ** numpy.linspace(log_start, log_stop, num)。
+    """
+    logs = _linspace(log_start, log_stop, num)
+    return [10 ** x for x in logs]
+
+
+def generate_grid(search_cfg: SearchConfig) -> list[dict[str, object]]:
+    """
+    Generate all grid points as Cartesian product of parameter values.
+    生成所有参数值笛卡尔积构成的网格点。
+
+    Continuous params: linspace or logspace based on distribution.
+    连续参数：根据分布类型使用 linspace 或 logspace。
+
+    Discrete params: use candidate tuples directly.
+    离散参数：直接使用候选元组。
+
+    Returns list of param dicts for train_probe evaluation.
+    返回用于 train_probe 评估的参数字典列表。
+    """
+    dim_values: dict[str, list[object]] = {}
+
+    # Continuous params / 连续参数
+    if search_cfg.learning_rate is not None:
+        r = search_cfg.learning_rate
+        if r.distribution == "log_uniform":
+            dim_values["learning_rate"] = _logspace(
+                math.log10(r.low), math.log10(r.high),
+                search_cfg.grid_num_points,
+            )
+        else:
+            dim_values["learning_rate"] = _linspace(
+                r.low, r.high, search_cfg.grid_num_points,
+            )
+
+    if search_cfg.weight_decay is not None:
+        r = search_cfg.weight_decay
+        if r.distribution == "log_uniform":
+            dim_values["weight_decay"] = _logspace(
+                math.log10(r.low), math.log10(r.high),
+                search_cfg.grid_num_points,
+            )
+        else:
+            dim_values["weight_decay"] = _linspace(
+                r.low, r.high, search_cfg.grid_num_points,
+            )
+
+    if search_cfg.momentum is not None:
+        r = search_cfg.momentum
+        dim_values["momentum"] = _linspace(
+            r.low, r.high, search_cfg.grid_num_points,
+        )
+
+    # Discrete params / 离散参数
+    if search_cfg.batch_size is not None:
+        dim_values["batch_size"] = list(search_cfg.batch_size)
+    if search_cfg.optimizer_type is not None:
+        dim_values["optimizer_type"] = list(search_cfg.optimizer_type)
+    if search_cfg.scheduler_type is not None:
+        dim_values["scheduler_type"] = list(search_cfg.scheduler_type)
+
+    # Cartesian product / 笛卡尔积
+    keys = sorted(dim_values.keys())
+    values = [dim_values[k] for k in keys]
+
+    return [
+        dict(zip(keys, combo))
+        for combo in itertools.product(*values)
+    ]
+
+
+def grid_search(
+    base_config: TrainConfig,
+    search_cfg: SearchConfig,
+    loaders_by_batch: dict[int, tuple[DataLoader, DataLoader]],
+    device: torch.device,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """
+    Grid search: exhaustive evaluation of all parameter combinations.
+    网格搜索：穷举评估所有参数组合。
+
+    Warning: grid size grows exponentially with the number of parameters.
+    Use SearchConfig.grid_num_points and set non-essential params to None
+    to control total evaluations.
+    注意：网格大小随参数数量指数增长。用 grid_num_points 控制连续参数密度，
+    将非关键参数设为 None 以控制总评估数。
+
+    Returns (best_params_dict, all_evaluated_records).
+    返回 (最优参数字典, 所有评估记录列表)。
+    """
+    grid_points = generate_grid(search_cfg)
+    total = len(grid_points)
+
+    print(f"\n--- Grid Search: {total} combinations ---")
+
+    all_records: list[dict[str, object]] = []
+    best_fitness = float("-inf")
+    best_params: dict[str, object] = {}
+
+    for i, params in enumerate(grid_points):
+        bs = int(params.get("batch_size", base_config.batch_size))
+        train_loader, test_loader = loaders_by_batch[bs]
+
+        fitness, history = train_probe(
+            params, base_config, search_cfg,
+            train_loader, test_loader, device,
+            seed=_BASE_SEED + i,
+        )
+
+        # Track best / 追踪最优
+        if fitness > best_fitness:
+            best_fitness = fitness
+            best_params = dict(params)
+
+        eval_id = i + 1
+        record = _make_record(eval_id, 0, params, fitness, history)
+        all_records.append(record)
+        print(
+            f"  [{eval_id}/{total}]"
+            f" fitness={fitness:.4f}"
+            f" | lr={params.get('learning_rate', 'N/A'):.6f}"
+            f" | opt={params.get('optimizer_type', 'N/A')}"
+            f" | bs={params.get('batch_size', 'N/A')}"
+        )
+
+    print(
+        f"\n  Grid search best fitness: {best_fitness:.4f}"
+    )
+    return best_params, all_records
+
+
+# ---------------------------------------------------------------------------
 # Result logging / 结果记录
 # ---------------------------------------------------------------------------
 
@@ -582,9 +807,7 @@ def log_search_results(
 
     results = OrderedDict([
         ("search_config", {
-            "population_size": search_cfg.population_size,
-            "offspring_per_gen": search_cfg.offspring_per_gen,
-            "num_generations": search_cfg.num_generations,
+            "strategy": search_cfg.strategy,
             "search_epochs": search_cfg.search_epochs,
             "total_evaluations": len(all_records),
         }),
@@ -628,6 +851,43 @@ def load_best_search_params(
 # Public API / 公共接口
 # ---------------------------------------------------------------------------
 
+def _estimate_total_evaluations(search_cfg: SearchConfig) -> int:
+    """
+    Estimate total evaluations for the given strategy.
+    估算给定策略的总评估次数。
+    """
+    strategy = search_cfg.strategy.lower()
+    if strategy == "evolutionary":
+        return (
+            search_cfg.population_size
+            + search_cfg.num_generations
+            * search_cfg.offspring_per_gen
+        )
+    elif strategy == "random":
+        return search_cfg.num_trials
+    elif strategy == "grid":
+        return len(generate_grid(search_cfg))
+    else:
+        return 0
+
+
+# Strategy label map / 策略标签映射
+_STRATEGY_LABELS: dict[str, tuple[str, str]] = {
+    "evolutionary": (
+        "Evolutionary Hyperparameter Search",
+        "进化超参数搜索",
+    ),
+    "random": (
+        "Random Hyperparameter Search",
+        "随机超参数搜索",
+    ),
+    "grid": (
+        "Grid Hyperparameter Search",
+        "网格超参数搜索",
+    ),
+}
+
+
 def run_search(
     config: TrainConfig,
     train_loader: DataLoader,
@@ -635,8 +895,12 @@ def run_search(
     search_cfg: SearchConfig | None = None,
 ) -> dict[str, object]:
     """
-    Run evolutionary hyperparameter search and save results.
-    运行进化超参数搜索并保存结果。
+    Run hyperparameter search and save results.
+    运行超参数搜索并保存结果。
+
+    Strategy is selected via search_cfg.strategy:
+    "evolutionary", "random", or "grid".
+    通过 search_cfg.strategy 选择策略。
 
     Returns dict of best params for use with
     dataclasses.replace(config, **best_params).
@@ -651,23 +915,37 @@ def run_search(
     if search_cfg is None:
         search_cfg = SearchConfig()
 
+    strategy = search_cfg.strategy.lower()
+    if strategy not in _STRATEGY_LABELS:
+        raise ValueError(
+            f"Unknown search strategy: {search_cfg.strategy}. "
+            f"Supported: evolutionary, random, grid"
+        )
+
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
+    label_en, label_cn = _STRATEGY_LABELS[strategy]
+    total_evals = _estimate_total_evaluations(search_cfg)
+
     print("=" * 60)
-    print("Evolutionary Hyperparameter Search")
-    print("进化超参数搜索")
+    print(label_en)
+    print(label_cn)
     print("=" * 60)
-    print(f"  Population: {search_cfg.population_size}")
-    print(f"  Offspring/gen: {search_cfg.offspring_per_gen}")
-    print(f"  Generations: {search_cfg.num_generations}")
+    if strategy == "evolutionary":
+        print(f"  Population: {search_cfg.population_size}")
+        print(f"  Offspring/gen: {search_cfg.offspring_per_gen}")
+        print(f"  Generations: {search_cfg.num_generations}")
+    elif strategy == "random":
+        print(f"  Trials: {search_cfg.num_trials}")
+    elif strategy == "grid":
+        print(f"  Grid points/dim: {search_cfg.grid_num_points}")
     print(
         f"  Search epochs: {search_cfg.search_epochs}"
     )
     print(
-        f"  Total evaluations: "
-        f"{search_cfg.population_size + search_cfg.num_generations * search_cfg.offspring_per_gen}"
+        f"  Total evaluations: {total_evals}"
     )
     print(f"  Device: {device}")
     print()
@@ -695,9 +973,18 @@ def run_search(
         )
 
     # Run search / 运行搜索
-    best_params, all_records = evolutionary_search(
-        config, search_cfg, loaders_by_batch, device,
-    )
+    if strategy == "evolutionary":
+        best_params, all_records = evolutionary_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+    elif strategy == "random":
+        best_params, all_records = random_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
+    elif strategy == "grid":
+        best_params, all_records = grid_search(
+            config, search_cfg, loaders_by_batch, device,
+        )
 
     # Save results / 保存结果
     results_path = log_search_results(

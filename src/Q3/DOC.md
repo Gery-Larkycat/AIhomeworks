@@ -27,10 +27,10 @@ src/Q3/
 ├── augment.py        # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
 ├── train.py          # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
 ├── evaluate.py       # 评估指标
-├── search.py         # 进化超参数搜索（(μ+λ) 演化策略）
+├── search.py         # 超参数搜索（演化/随机/网格三种策略）
 ├── checkpoint.py     # 检查点管理与特征提取器导出
 ├── visualize.py      # 可视化（训练曲线、混淆矩阵）
-├── main.py           # 主入口（含 --search / --search-only / --ignore-search）
+├── main.py           # 主入口（含 --search / --no-augmentation / --amp 等）
 ├── scripts/          # 探索性分析脚本
 │   └── analyze_class_distribution.py  # 类别分布分析
 └── tests/
@@ -176,12 +176,15 @@ src/Q3/
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
+| `strategy` | `"evolutionary"` | 搜索策略：`evolutionary` / `random` / `grid` |
 | `search_epochs` | `5` | 每组超参数的评估轮数 |
-| `population_size` | `8` | 种群大小 (μ) |
-| `offspring_per_gen` | `4` | 每代后代数 (λ) |
-| `num_generations` | `3` | 演化代数 (G) |
-| `tournament_size` | `3` | 锦标赛选择大小 |
-| `mutation_rate` | `0.25` | 逐基因变异概率 |
+| `population_size` | `8` | 种群大小 (μ)，演化策略专用 |
+| `offspring_per_gen` | `4` | 每代后代数 (λ)，演化策略专用 |
+| `num_generations` | `3` | 演化代数 (G)，演化策略专用 |
+| `tournament_size` | `3` | 锦标赛选择大小，演化策略专用 |
+| `mutation_rate` | `0.25` | 逐基因变异概率，演化策略专用 |
+| `num_trials` | `20` | 随机搜索试验次数 |
+| `grid_num_points` | `5` | 网格搜索每个连续维度采样点数 |
 | `learning_rate` | `HyperparamRange(1e-4, 1.0, "log_uniform")` | 搜索范围（设 None 跳过） |
 | `weight_decay` | `HyperparamRange(1e-6, 1e-2, "log_uniform")` | 搜索范围 |
 | `momentum` | `HyperparamRange(0.8, 0.99, "uniform")` | 搜索范围 |
@@ -481,6 +484,14 @@ for name, param in model.named_parameters():
 
 ## 7. 超参数搜索
 
+支持三种搜索策略，通过 `SearchConfig.strategy` 或 `--search-strategy` 选择：
+
+| 策略 | CLI 参数 | 特点 | 默认评估次数 |
+|---|---|---|---|
+| 演化 | `evolutionary` | (μ+λ) 演化策略，适合中维空间 | 20 (8+3×4) |
+| 随机 (默认) | `random` | 均匀随机采样，简单高效基线 | 10 |
+| 网格 | `grid` | 笛卡尔积穷举，最全面但最慢 | 取决于参数空间 |
+
 ### 7.1 演化算法
 
 使用 **(μ + λ) 演化策略**，比网格搜索更高效地探索混合连续/离散参数空间：
@@ -498,7 +509,24 @@ for name, param in model.named_parameters():
 - **变异**：连续参数乘性高斯扰动，离散参数随机重采样
 - **精英保留**：父代 + 后代合并，保留前 μ 个
 
-### 7.2 搜索空间
+### 7.2 随机搜索
+
+从搜索空间均匀随机采样 `num_trials` 组超参数并逐一评估。
+
+- **试验次数**：10（可配置 `SearchConfig.num_trials`）
+- **采样方式**：连续参数按 `HyperparamRange.distribution` 采样（uniform / log_uniform），离散参数随机选择
+- **优点**：实现简单、无超参数、对低维空间常与演化方法不相上下
+
+### 7.3 网格搜索
+
+对搜索空间所有参数取值的笛卡尔积进行穷举评估。
+
+- **网格密度**：`SearchConfig.grid_num_points`（默认 5）控制每个连续维度的采样点数
+- **连续参数**：log_uniform 分布在对数空间等距，uniform 分布在线性空间等距
+- **离散参数**：直接使用候选列表
+- **注意**：网格大小随参数数量指数增长，建议缩小搜索空间或降低 `grid_num_points`
+
+### 7.4 搜索空间
 
 | 超参数 | 类型 | 范围/选项 | 搜索原因 |
 |---|---|---|---|
@@ -511,7 +539,7 @@ for name, param in model.named_parameters():
 
 搜索空间在 `config.py` 的 `SearchConfig` 中定义，可修改范围或设 `None` 跳过某个参数。
 
-### 7.3 适应度函数
+### 7.5 适应度函数
 
 **fitness = 10 × AIR + LDR**
 
@@ -521,13 +549,13 @@ for name, param in model.named_parameters():
 
 使用测试集指标以偏好泛化性好的配置。
 
-### 7.4 输出文件
+### 7.6 输出文件
 
 搜索结果保存为 `checkpoints/hp_search_results.json`：
 
 ```json
 {
-  "search_config": { "population_size": 8, "generations": 3, "search_epochs": 5 },
+  "search_config": { "strategy": "evolutionary", "search_epochs": 5, "total_evaluations": 20 },
   "best": {
     "params": { "learning_rate": 0.05, "optimizer_type": "sgd", ... },
     "fitness": 0.87,
@@ -539,7 +567,7 @@ for name, param in model.named_parameters():
 }
 ```
 
-### 7.5 训练时自动加载
+### 7.7 训练时自动加载
 
 `main.py` 默认检测 `hp_search_results.json`：
 - 文件存在 → 自动应用最优参数
@@ -557,6 +585,11 @@ uv run python src/Q3/main.py --search-only
 
 # 搜索 + 用最优配置训练
 uv run python src/Q3/main.py --search
+
+# 指定搜索策略
+uv run python src/Q3/main.py --search-only --search-strategy random
+uv run python src/Q3/main.py --search-only --search-strategy grid
+uv run python src/Q3/main.py --search-only --search-strategy evolutionary
 ```
 
 ### 自动使用搜索结果
@@ -580,6 +613,9 @@ uv sync  # 安装依赖（torch, torchvision, matplotlib, pytest）
 
 ```bash
 uv run python src/Q3/main.py
+
+# 禁用数据增强
+uv run python src/Q3/main.py --no-augmentation
 ```
 
 ### 快速测试（2 epochs）
