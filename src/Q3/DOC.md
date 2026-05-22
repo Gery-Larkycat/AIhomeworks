@@ -7,7 +7,8 @@
 3. [模块详解](#3-模块详解)
 4. [训练流程](#4-训练流程)
 5. [迁移学习准备](#5-迁移学习准备)
-6. [使用方法](#6-使用方法)
+6. [超参数搜索](#6-超参数搜索)
+7. [使用方法](#7-使用方法)
 
 ---
 
@@ -19,14 +20,15 @@
 
 ```
 src/Q3/
-├── config.py         # 训练配置（冻结 dataclass）
+├── config.py         # 训练配置（冻结 dataclass）+ 搜索配置（SearchConfig）
 ├── model.py          # 从零实现的 ResNet-18
 ├── data.py           # CIFAR-100 数据加载
-├── train.py          # 训练循环
+├── train.py          # 训练循环 + 优化器/调度器工厂函数
 ├── evaluate.py       # 评估指标
+├── search.py         # 进化超参数搜索（(μ+λ) 演化策略）
 ├── checkpoint.py     # 检查点管理与特征提取器导出
 ├── visualize.py      # 可视化（训练曲线、混淆矩阵）
-├── main.py           # 主入口
+├── main.py           # 主入口（含 --search / --search-only / --ignore-search）
 └── tests/
     ├── test_model.py # 模型验证（7 项测试）
     └── test_data.py  # 数据验证（4 项测试）
@@ -135,28 +137,49 @@ src/Q3/
 
 ## 3. 模块详解
 
-### 3.1 `config.py` — 训练配置
+### 3.1 `config.py` — 训练配置与搜索配置
 
 使用 `@dataclass(frozen=True)` 定义不可变配置对象，所有超参数集中管理：
+
+**TrainConfig** — 训练配置：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `data_root` | `"data"` | CIFAR-100 数据存放路径 |
 | `checkpoint_dir` | `"checkpoints"` | 检查点保存路径 |
 | `num_classes` | `100` | 分类数（CIFAR-100=100） |
-| `batch_size` | `128` | 批大小 |
-| `epochs` | `200` | 训练轮数 |
+| `batch_size` | `1024` | 批大小 |
+| `epochs` | `100` | 训练轮数 |
 | `learning_rate` | `0.1` | 初始学习率 |
 | `momentum` | `0.9` | SGD 动量 |
 | `weight_decay` | `5e-4` | L2 正则化系数 |
 | `label_smoothing` | `0.1` | 标签平滑系数 |
-| `patience` | `20` | 早停等待轮数（无改善连续 N 轮则停止） |
+| `optimizer_type` | `"sgd"` | 优化器类型（sgd/adam/adamw/rmsprop/nadam） |
+| `scheduler_type` | `"cosine"` | 调度器类型（cosine/constant/step） |
+| `patience` | `10` | 早停等待轮数 |
 | `min_delta` | `1e-4` | 视为改善的最小准确率增量 |
-| `scheduler_t_max` | `200` | 余弦退火周期（= epochs） |
+| `scheduler_t_max` | `100` | 余弦退火周期（= epochs） |
 | `mean` | `(0.5071, 0.4867, 0.4408)` | CIFAR-100 均值 |
-| `std` | `(0.2675, 0.2565, 0.2761)` | CIFAR-100 标准差 |
+| `std` | `(0.2675, 0.2565, 2761)` | CIFAR-100 标准差 |
 
-`frozen=True` 保证训练过程中配置不被意外修改。
+**SearchConfig** — 超参数搜索配置：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `search_epochs` | `5` | 每组超参数的评估轮数 |
+| `population_size` | `8` | 种群大小 (μ) |
+| `offspring_per_gen` | `4` | 每代后代数 (λ) |
+| `num_generations` | `3` | 演化代数 (G) |
+| `tournament_size` | `3` | 锦标赛选择大小 |
+| `mutation_rate` | `0.25` | 逐基因变异概率 |
+| `learning_rate` | `HyperparamRange(1e-4, 1.0, "log_uniform")` | 搜索范围（设 None 跳过） |
+| `weight_decay` | `HyperparamRange(1e-6, 1e-2, "log_uniform")` | 搜索范围 |
+| `momentum` | `HyperparamRange(0.8, 0.99, "uniform")` | 搜索范围 |
+| `batch_size` | `(128, 256, 512, 1024)` | 离散候选值 |
+| `optimizer_type` | `("sgd", "adam", "adamw", "rmsprop", "nadam")` | 离散候选值 |
+| `scheduler_type` | `("cosine", "constant", "step")` | 离散候选值 |
+
+`frozen=True` 保证训练过程中配置不被意外修改。`SearchConfig` 中的参数范围设为 `None` 可跳过该参数的搜索。
 
 ### 3.2 `model.py` — 网络模型
 
@@ -187,13 +210,18 @@ transforms.Compose([
 
 ### 3.4 `train.py` — 训练循环
 
+**工厂函数**：
+- `create_optimizer(model, config)`：根据 `config.optimizer_type` 创建优化器（SGD/Adam/AdamW/RMSprop/NAdam）
+- `create_scheduler(optimizer, config)`：根据 `config.scheduler_type` 创建调度器（CosineAnnealingLR/StepLR/constant=None）
+- `create_criterion(config)`：创建 `CrossEntropyLoss(label_smoothing=...)`
+
 **`train_one_epoch`**：
 - 标准训练步骤：`zero_grad → forward → loss → backward → step`
 - 累积 loss 和正确数，每 100 个 batch 打印进度
 - 返回 `(avg_loss, accuracy)`
 
 **`train`**（完整训练循环）：
-- 创建 `SGD` 优化器 + `CosineAnnealingLR` 调度器 + `CrossEntropyLoss(label_smoothing=0.1)`
+- 通过工厂函数创建优化器、调度器和损失函数
 - 每 epoch：训练 → 评估 → 调整学习率 → 记录历史 → 保存最佳模型 → 早停检查
 - 当测试准确率创新高时，同时保存完整检查点和特征提取器
 - **早停策略**：连续 `patience` 轮测试准确率没有超过 `min_delta` 的改善则提前终止
@@ -233,12 +261,16 @@ transforms.Compose([
 
 ```
 解析命令行参数 → 构建配置 → 创建模型 → 加载数据
-→ 训练 200 epochs → 保存训练历史
+→ [可选] 超参数搜索（--search / --search-only）
+→ [可选] 自动加载已有搜索结果
+→ 训练 → 保存训练历史
 → 最终评估（top-1 accuracy + per-class accuracy + 混淆矩阵）
 → 生成可视化 → 验证迁移学习就绪
 ```
 
 支持命令行覆盖配置：`--epochs`, `--batch-size`, `--lr`, `--data-root`, `--eval-only`。
+
+搜索相关参数：`--search`（搜索+训练）、`--search-only`（仅搜索）、`--ignore-search`（忽略已有结果）。
 
 ---
 
@@ -248,8 +280,8 @@ transforms.Compose([
 
 | 组件 | 选择 | 原因 |
 |---|---|---|
-| **优化器** | SGD (momentum=0.9) | 在小数据集上 SGD + momentum 通常优于 Adam，泛化性更好 |
-| **学习率调度** | CosineAnnealingLR (T_max=200) | 平滑衰减，后期学习率趋近 0 有利于收敛到更优解 |
+| **优化器** | 可配置（默认 SGD, momentum=0.9） | 通过 `create_optimizer()` 工厂函数支持 SGD/Adam/AdamW/RMSprop/NAdam |
+| **学习率调度** | 可配置（默认 CosineAnnealingLR） | 通过 `create_scheduler()` 工厂函数支持 cosine/step/constant |
 | **损失函数** | CrossEntropyLoss (label_smoothing=0.1) | 100 类分类中，标签平滑防止模型过度自信，提升泛化能力 |
 | **正则化** | weight_decay=5e-4 + BN | L2 正则化配合 BatchNorm 是 ResNet 的标准配置 |
 | **早停** | patience=20, min_delta=1e-4 | 防止过拟合，避免无效训练 |
@@ -323,9 +355,97 @@ for name, param in model.named_parameters():
 
 ---
 
-## 6. 使用方法
+## 6. 超参数搜索
 
-### 环境准备
+### 6.1 演化算法
+
+使用 **(μ + λ) 演化策略**，比网格搜索更高效地探索混合连续/离散参数空间：
+
+- **种群大小 (μ)**：8 个个体
+- **每代后代 (λ)**：4 个
+- **演化代数 (G)**：3 代
+- **总评估次数**：8 + 3×4 = 20 次
+- **每次评估**：5 epochs 训练探针
+- **预计耗时**：RTX 4060 上约 10-17 分钟
+
+**演化算子**：
+- **选择**：锦标赛选择（size=3）
+- **交叉**：连续参数用 BLX-α（α=0.3），离散参数均匀选择
+- **变异**：连续参数乘性高斯扰动，离散参数随机重采样
+- **精英保留**：父代 + 后代合并，保留前 μ 个
+
+### 6.2 搜索空间
+
+| 超参数 | 类型 | 范围/选项 | 搜索原因 |
+|---|---|---|---|
+| `learning_rate` | 连续, log-uniform | [1e-4, 1.0] | 最重要的参数，1 epoch 即可见效果 |
+| `weight_decay` | 连续, log-uniform | [1e-6, 1e-2] | 正则化强度，5 epoch 内可见 train-test gap |
+| `momentum` | 连续, uniform | [0.8, 0.99] | SGD 梯度加速，影响收敛速度 |
+| `batch_size` | 离散 | [128, 256, 512, 1024] | 影响 per-epoch 更新次数 |
+| `optimizer_type` | 离散 | [sgd, adam, adamw, rmsprop, nadam] | 不同收敛曲线 |
+| `scheduler_type` | 离散 | [cosine, constant, step] | 5 epoch 内 LR 轨迹差异明显 |
+
+搜索空间在 `config.py` 的 `SearchConfig` 中定义，可修改范围或设 `None` 跳过某个参数。
+
+### 6.3 适应度函数
+
+**fitness = 10 × AIR + LDR**
+
+- **AIR**（准确率提升速率）：test_acc 随 epoch 的线性回归斜率
+- **LDR**（损失下降速率）：test_loss 随 epoch 的线性回归斜率取反
+- 发散惩罚：acc 下降或 loss 上升时 fitness × 0.5
+
+使用测试集指标以偏好泛化性好的配置。
+
+### 6.4 输出文件
+
+搜索结果保存为 `checkpoints/hp_search_results.json`：
+
+```json
+{
+  "search_config": { "population_size": 8, "generations": 3, "search_epochs": 5 },
+  "best": {
+    "params": { "learning_rate": 0.05, "optimizer_type": "sgd", ... },
+    "fitness": 0.87,
+    "test_acc_history": [0.01, 0.05, 0.09, 0.13, 0.18],
+    "test_loss_history": [4.60, 4.12, 3.78, 3.52, 3.35]
+  },
+  "generation_summary": [...],
+  "all_evaluated": [...]
+}
+```
+
+### 6.5 训练时自动加载
+
+`main.py` 默认检测 `hp_search_results.json`：
+- 文件存在 → 自动应用最优参数
+- `--ignore-search` → 忽略搜索结果
+
+---
+
+## 7. 使用方法
+
+### 超参数搜索
+
+```bash
+# 仅运行搜索（推荐：先搜索一次）
+uv run python src/Q3/main.py --search-only
+
+# 搜索 + 用最优配置训练
+uv run python src/Q3/main.py --search
+```
+
+### 自动使用搜索结果
+
+```bash
+# 搜索完成后，正常训练会自动加载最优参数
+uv run python src/Q3/main.py
+
+# 忽略搜索结果，使用默认/CLI参数
+uv run python src/Q3/main.py --ignore-search
+```
+
+### 运行测试
 
 ```bash
 cd AIhomeworks
@@ -365,6 +485,7 @@ checkpoints/
 ├── resnet18_cifar100_best.pth                # 最佳完整模型
 ├── resnet18_cifar100_feature_extractor.pth   # 特征提取器（迁移学习用）
 ├── training_history.json                     # 训练历史
+├── hp_search_results.json                    # 超参数搜索结果
 └── plots/
     ├── training_curves.png                   # Loss/Accuracy 曲线
     ├── confusion_matrix.png                  # 混淆矩阵
