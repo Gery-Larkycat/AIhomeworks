@@ -18,23 +18,27 @@ def evaluate(
     """
     Evaluate model, returning (loss, accuracy).
     评估模型，返回 (损失, 准确率)。
+
+    Accumulates as GPU tensors to avoid per-batch sync.
+    以 GPU 张量累积，避免每 batch 同步。
     """
     criterion = nn.CrossEntropyLoss()
     model.eval()
-    total_loss = 0.0
-    total_correct = 0
+    total_loss = torch.tensor(0.0, device=device)
+    total_correct = torch.tensor(0, device=device)
     total_samples = 0
 
     for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
         outputs = model(images)
         loss = criterion(outputs, labels)
-        total_loss += loss.item() * images.size(0)
-        total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+        total_loss += loss * images.size(0)
+        total_correct += (outputs.argmax(dim=1) == labels).sum()
         total_samples += images.size(0)
 
-    avg_loss = total_loss / total_samples
-    accuracy = total_correct / total_samples
+    avg_loss = (total_loss / total_samples).item()
+    accuracy = (total_correct / total_samples).item()
     return avg_loss, accuracy
 
 

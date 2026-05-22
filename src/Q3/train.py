@@ -100,38 +100,55 @@ def train_one_epoch(
     """
     Train for one epoch, returning (loss, accuracy).
     训练一个 epoch，返回 (损失, 准确率)。
+
+    Accumulates metrics as GPU tensors to avoid per-batch GPU→CPU sync
+    (loss.item() forces synchronization, stalling the pipeline).
+    以 GPU 张量累积指标，避免每 batch 的 GPU→CPU 同步
+    （loss.item() 会强制同步，阻塞流水线）。
     """
     model.train()
-    total_loss = 0.0
-    total_correct = 0
+    # Accumulate on GPU, sync once at epoch end
+    # 在 GPU 上累积，epoch 结束时一次性同步
+    total_loss = torch.tensor(0.0, device=device)
+    total_correct = torch.tensor(0, device=device)
     total_samples = 0
 
     for batch_idx, (images, labels) in enumerate(loader):
-        images, labels = images.to(device), labels.to(device)
+        # non_blocking=True overlaps H2D transfer with computation
+        # non_blocking=True 使数据传输与前向计算重叠
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        optimizer.zero_grad()
+        # set_to_none=True avoids memset overhead
+        # set_to_none=True 避免 memset 开销
+        optimizer.zero_grad(set_to_none=True)
         outputs = model(images)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item() * images.size(0)
-        total_correct += (
-            (outputs.argmax(dim=1) == labels).sum().item()
-        )
-        total_samples += images.size(0)
+        # Accumulate as tensors (no .item() → no sync)
+        # 以张量累积（不用 .item() → 不触发同步）
+        batch_size = images.size(0)
+        total_loss += loss.detach() * batch_size
+        total_correct += (outputs.argmax(dim=1) == labels).sum()
+        total_samples += batch_size
 
         # Progress every 100 batches / 每 100 个 batch 打印进度
         if (batch_idx + 1) % 100 == 0:
-            batch_acc = total_correct / total_samples
+            # Single sync for progress print (acceptable overhead)
+            # 仅打印时同步一次（可接受的开销）
+            batch_loss = (total_loss / total_samples).item()
+            batch_acc = (total_correct / total_samples).item()
             print(
                 f"  Epoch {epoch} | Batch {batch_idx + 1}/{len(loader)}"
-                f" | Loss: {total_loss / total_samples:.4f}"
+                f" | Loss: {batch_loss:.4f}"
                 f" | Acc: {batch_acc:.4f}"
             )
 
-    avg_loss = total_loss / total_samples
-    accuracy = total_correct / total_samples
+    # Single sync at epoch end / epoch 结束时一次同步
+    avg_loss = (total_loss / total_samples).item()
+    accuracy = (total_correct / total_samples).item()
     return avg_loss, accuracy
 
 
@@ -154,6 +171,11 @@ def train(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
     model = model.to(device)
+
+    # Enable cuDNN auto-tuner for fixed input sizes (CIFAR: 32x32)
+    # 启用 cuDNN 自动调优（CIFAR 输入尺寸固定为 32x32）
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
 
     # Create optimizer, scheduler, criterion via factories
     # 通过工厂函数创建优化器、调度器、损失函数
