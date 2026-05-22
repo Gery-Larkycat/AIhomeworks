@@ -318,6 +318,7 @@ def train_probe(
     每次探针使用确定性种子以保证可复现。
     """
     torch.manual_seed(seed)
+    random.seed(seed)
 
     # Build config for this probe / 为本次探针构建配置
     overrides = {
@@ -346,6 +347,8 @@ def train_probe(
             train_one_epoch(
                 model, train_loader, optimizer,
                 criterion, device, epoch,
+                aug_config=config.augmentation,
+                num_classes=config.num_classes,
             )
             test_loss, test_acc = evaluate(
                 model, test_loader, device

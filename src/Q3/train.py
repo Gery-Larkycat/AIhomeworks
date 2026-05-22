@@ -6,13 +6,16 @@ Uses configurable optimizer, scheduler, and loss via factory functions.
 通过工厂函数使用可配置的优化器、调度器和损失函数。
 """
 
+import dataclasses
+
 import torch
 import torch.nn as nn
 from torch.optim import SGD, Adam, AdamW, NAdam, RMSprop, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, LRScheduler
 from torch.utils.data import DataLoader
 
-from .config import TrainConfig
+from .augment import apply_batch_augmentation
+from .config import AugmentationConfig, TrainConfig
 from .evaluate import evaluate
 
 
@@ -97,6 +100,8 @@ def train_one_epoch(
     device: torch.device,
     epoch: int,
     scaler: torch.amp.GradScaler | None = None,
+    aug_config: AugmentationConfig | None = None,
+    num_classes: int = 100,
 ) -> tuple[float, float]:
     """
     Train for one epoch, returning (loss, accuracy).
@@ -105,13 +110,20 @@ def train_one_epoch(
     Uses AMP (mixed precision) when scaler is provided.
     提供 scaler 时启用 AMP（混合精度）训练。
 
-    Accumulates metrics as GPU tensors to avoid per-batch GPU→CPU sync
-    (loss.item() forces synchronization, stalling the pipeline).
-    以 GPU 张量累积指标，避免每 batch 的 GPU→CPU 同步
-    （loss.item() 会强制同步，阻塞流水线）。
+    When aug_config is provided, applies CutMix/Mixup batch augmentation
+    before forward pass. Soft labels (float tensor) from CutMix/Mixup are
+    handled by CrossEntropyLoss natively.
+    提供 aug_config 时，在前向传播前应用 CutMix/Mixup 批次级增强。
+    CutMix/Mixup 产生的 soft labels（浮点张量）由 CrossEntropyLoss 原生支持。
+
+    Accumulates metrics as GPU tensors to avoid per-batch GPU→CPU sync.
+    以 GPU 张量累积指标，避免每 batch 的 GPU→CPU 同步。
     """
     model.train()
     use_amp = scaler is not None
+    # Whether batch augmentation is active
+    # 批次级增强是否激活
+    use_batch_aug = aug_config is not None and aug_config.use_augmentation
     # Accumulate on GPU, sync once at epoch end
     # 在 GPU 上累积，epoch 结束时一次性同步
     total_loss = torch.tensor(0.0, device=device)
@@ -123,6 +135,13 @@ def train_one_epoch(
         # non_blocking=True 使数据传输与前向计算重叠
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
+
+        # Batch-level augmentation (CutMix/Mixup)
+        # 批次级增强（CutMix/Mixup）
+        if use_batch_aug:
+            images, labels = apply_batch_augmentation(
+                images, labels, aug_config, num_classes
+            )
 
         # set_to_none=True avoids memset overhead
         # set_to_none=True 避免 memset 开销
@@ -144,7 +163,15 @@ def train_one_epoch(
         # 以张量累积（不用 .item() → 不触发同步）
         batch_size = images.size(0)
         total_loss += loss.detach() * batch_size
-        total_correct += (outputs.argmax(dim=1) == labels).sum()
+        # Accuracy: use dominant label for soft labels
+        # 准确率: soft labels 时用主导标签计算
+        if labels.is_floating_point():
+            # labels is (B, num_classes) soft labels → use original dominant
+            # labels 是 (B, num_classes) soft labels → 用主导标签
+            dominant = labels.argmax(dim=1)
+            total_correct += (outputs.argmax(dim=1) == dominant).sum()
+        else:
+            total_correct += (outputs.argmax(dim=1) == labels).sum()
         total_samples += batch_size
 
         # Progress every 100 batches / 每 100 个 batch 打印进度
@@ -194,7 +221,22 @@ def train(
     # 通过工厂函数创建优化器、调度器、损失函数
     optimizer = create_optimizer(model, config)
     scheduler = create_scheduler(optimizer, config)
-    criterion = create_criterion(config)
+
+    # Disable label_smoothing when CutMix/Mixup active:
+    # soft labels already provide similar regularization.
+    # CutMix/Mixup 激活时禁用 label_smoothing:
+    # soft labels 已提供类似的正则化效果。
+    aug_config = config.augmentation
+    batch_mix_active = (
+        aug_config.use_augmentation
+        and (aug_config.use_cutmix or aug_config.use_mixup)
+        and aug_config.mix_prob > 0
+    )
+    if batch_mix_active:
+        mix_config = dataclasses.replace(config, label_smoothing=0.0)
+        criterion = create_criterion(mix_config)
+    else:
+        criterion = create_criterion(config)
 
     # AMP GradScaler for mixed precision on CUDA
     # CUDA 上混合精度训练的 GradScaler
@@ -226,6 +268,7 @@ def train(
         train_loss, train_acc = train_one_epoch(
             model, train_loader, optimizer, criterion,
             device, epoch, scaler=scaler,
+            aug_config=aug_config, num_classes=config.num_classes,
         )
         test_loss, test_acc = evaluate(
             model, test_loader, device, use_amp=use_amp

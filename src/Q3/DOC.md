@@ -5,10 +5,11 @@
 1. [项目概览](#1-项目概览)
 2. [网络架构](#2-网络架构)
 3. [模块详解](#3-模块详解)
-4. [训练流程](#4-训练流程)
-5. [迁移学习准备](#5-迁移学习准备)
-6. [超参数搜索](#6-超参数搜索)
-7. [使用方法](#7-使用方法)
+4. [数据增强](#4-数据增强)
+5. [训练流程](#5-训练流程)
+6. [迁移学习准备](#6-迁移学习准备)
+7. [超参数搜索](#7-超参数搜索)
+8. [使用方法](#8-使用方法)
 
 ---
 
@@ -20,18 +21,24 @@
 
 ```
 src/Q3/
-├── config.py         # 训练配置（冻结 dataclass）+ 搜索配置（SearchConfig）
+├── config.py         # 训练配置 + 搜索配置 + 数据增强配置（AugmentationConfig）
 ├── model.py          # 从零实现的 ResNet-18
-├── data.py           # CIFAR-100 数据加载
-├── train.py          # 训练循环 + 优化器/调度器工厂函数
+├── data.py           # CIFAR-100 数据加载（委托 augment.py 构建变换管线）
+├── augment.py        # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
+├── train.py          # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
 ├── evaluate.py       # 评估指标
 ├── search.py         # 进化超参数搜索（(μ+λ) 演化策略）
 ├── checkpoint.py     # 检查点管理与特征提取器导出
 ├── visualize.py      # 可视化（训练曲线、混淆矩阵）
 ├── main.py           # 主入口（含 --search / --search-only / --ignore-search）
+├── scripts/          # 探索性分析脚本
+│   └── analyze_class_distribution.py  # 类别分布分析
 └── tests/
-    ├── test_model.py # 模型验证（7 项测试）
-    └── test_data.py  # 数据验证（4 项测试）
+    ├── test_model.py   # 模型验证
+    ├── test_data.py    # 数据验证
+    ├── test_augment.py # 增强验证（32 项测试）
+    ├── test_search.py  # 搜索验证
+    └── test_perf.py    # GPU 性能基准测试
 ```
 
 **设计原则**：每个文件单一职责（SRP），模块间通过 `TrainConfig` dataclass 和函数参数传递依赖，避免全局状态。
@@ -137,7 +144,7 @@ src/Q3/
 
 ## 3. 模块详解
 
-### 3.1 `config.py` — 训练配置与搜索配置
+### 3.1 `config.py` — 训练配置、搜索配置与增强配置
 
 使用 `@dataclass(frozen=True)` 定义不可变配置对象，所有超参数集中管理：
 
@@ -160,7 +167,10 @@ src/Q3/
 | `min_delta` | `1e-4` | 视为改善的最小准确率增量 |
 | `scheduler_t_max` | `100` | 余弦退火周期（= epochs） |
 | `mean` | `(0.5071, 0.4867, 0.4408)` | CIFAR-100 均值 |
-| `std` | `(0.2675, 0.2565, 2761)` | CIFAR-100 标准差 |
+| `std` | `(0.2675, 0.2565, 0.2761)` | CIFAR-100 标准差 |
+| `augmentation` | `AugmentationConfig()` | 数据增强配置（独立管理） |
+
+**AugmentationConfig** — 数据增强配置（详见第 5 节）：
 
 **SearchConfig** — 超参数搜索配置：
 
@@ -196,15 +206,10 @@ src/Q3/
 
 ### 3.3 `data.py` — 数据加载
 
-仅做基础归一化（不做额外增强）：
+训练集和测试集使用独立的变换管线：
 
-```python
-transforms.Compose([
-    transforms.ToTensor(),                                          # [0,255] → [0,1]
-    transforms.Normalize(mean=[0.5071, 0.4867, 0.4408],            # CIFAR-100 专用统计量
-                         std=[0.2675, 0.2565, 0.2761]),
-])
-```
+- **训练集**：委托 `augment.py` 的 `build_train_transforms()` 构建（19 种增强 + 归一化）
+- **测试集**：仅 `ToTensor + Normalize`（无增强）
 
 `get_cifar100_loaders(config)` 返回 `(train_loader, test_loader)`，首次运行自动下载 CIFAR-100 到 `data_root`。
 
@@ -216,12 +221,16 @@ transforms.Compose([
 - `create_criterion(config)`：创建 `CrossEntropyLoss(label_smoothing=...)`
 
 **`train_one_epoch`**：
-- 标准训练步骤：`zero_grad → forward → loss → backward → step`
+- 标准训练步骤：`zero_grad → batch augmentation → forward → loss → backward → step`
+- 每个批次前随机应用 CutMix / Mixup / 不增强（概率控制）
+- Soft labels 由 `CrossEntropyLoss` 原生处理
+- 准确率使用 dominant label 计算（soft labels 时用 `argmax`）
 - 累积 loss 和正确数，每 100 个 batch 打印进度
 - 返回 `(avg_loss, accuracy)`
 
 **`train`**（完整训练循环）：
 - 通过工厂函数创建优化器、调度器和损失函数
+- CutMix/Mixup 激活时自动禁用 `label_smoothing`（soft labels 已提供正则化）
 - 每 epoch：训练 → 评估 → 调整学习率 → 记录历史 → 保存最佳模型 → 早停检查
 - 当测试准确率创新高时，同时保存完整检查点和特征提取器
 - **早停策略**：连续 `patience` 轮测试准确率没有超过 `min_delta` 的改善则提前终止
@@ -274,9 +283,124 @@ transforms.Compose([
 
 ---
 
-## 4. 训练流程
+## 4. 数据增强
 
-### 4.1 优化策略
+### 4.1 概述
+
+共 **19 种增强技术**，分为 **5 大类**。每张图片平均被施加 5~8 种增强（各自独立概率），保证多样性而不至于单张图片过度扭曲。
+
+CIFAR-100 类别完全均衡（每类 500 训练 / 100 测试，CV=0.00%），**不需要类别平衡算法**。
+
+### 4.2 增强技术一览
+
+#### A. 几何变换 Geometric（PIL 级）
+
+| # | 方法 | 参数 | 概率 | 作用 |
+|---|---|---|---|---|
+| 1 | `RandomCrop` | `32, padding=4, reflect` | 100% | 位置不变性，CIFAR 金标准 |
+| 2 | `RandomHorizontalFlip` | `p=0.5` | 50% | 水平对称性 |
+| 3 | `RandomAffine` | `degrees=15, translate=0.1, scale=0.9~1.1, shear=5` | 100% | 旋转+平移+缩放+剪切一体化 |
+| 4 | `RandomPerspective` | `distortion=0.2` | 30% | 透视变形，模拟不同观察角度 |
+
+#### B. 颜色变换 Color（PIL 级）
+
+| # | 方法 | 参数 | 概率 | 作用 |
+|---|---|---|---|---|
+| 5 | `ColorJitter` | `brightness=0.3, contrast=0.3, saturation=0.3, hue=0.15` | 100% | 亮度/对比度/饱和度/色调抖动 |
+| 6 | `RandomGrayscale` | `p=0.1` | 10% | 灰度化，增强颜色不敏感特征 |
+| 7 | `RandomAutocontrast` | `p=0.2` | 20% | 自动对比度增强 |
+| 8 | `RandomEqualize` | `p=0.1` | 10% | 直方图均衡化 |
+| 9 | `RandomPosterize` | `bits=4` | 10% | 色彩量化，模拟低色深 |
+| 10 | `RandomSolarize` | `threshold=128` | 10% | 高亮像素反转 |
+
+#### C. 噪声与降质 Noise & Degradation（Tensor 级）
+
+| # | 方法 | 参数 | 概率 | 作用 |
+|---|---|---|---|---|
+| 11 | `GaussianNoise` | `std=0.02` | 50% | 高斯加性噪声，模拟传感器噪声 |
+| 12 | `SaltPepperNoise` | `amount=0.01` | 20% | 椒盐噪声，模拟坏像素 |
+| 13 | `ProbabilisticGaussianBlur` | `kernel_size=3` | 20% | 高斯模糊，模拟失焦 |
+| 14 | `RandomErasing` | `p=0.25, scale=(0.02,0.2)` | 25% | 随机擦除矩形区域 |
+
+#### D. 天气与压缩模拟 Weather & Compression
+
+| # | 方法 | 参数 | 概率 | 作用 |
+|---|---|---|---|---|
+| 15 | `JPEGCompressionPIL` | `quality=30~70` | 20% | JPEG 压缩伪影（PIL 级） |
+| 16 | `FogEffect` | `intensity=0.05~0.2` | 15% | 雾化效果，模拟大气散射 |
+| 17 | `RainStreaks` | `drops=3~10, angle=±30°` | 15% | 雨滴条纹，模拟雨天遮挡 |
+
+#### E. 批次级混合 Batch Mixing（训练循环内）
+
+| # | 方法 | 参数 | 概率 | 作用 |
+|---|---|---|---|---|
+| 18 | `CutMix` | `alpha=1.0` | 40% | 区域裁剪混合 + 标签混合 |
+| 19 | `Mixup` | `alpha=0.2` | 30% | 全图线性插值 + 标签混合 |
+
+### 4.3 Transform 管线顺序
+
+```
+PIL Image (32×32)
+│
+├── [A] RandomCrop → RandomHorizontalFlip → RandomAffine → RandomPerspective
+├── [B] ColorJitter → RandomGrayscale → RandomAutocontrast
+│     → RandomEqualize → RandomPosterize → RandomSolarize
+├── [D] JPEGCompressionPIL
+│
+├── ToTensor() → Normalize(mean, std)
+│
+├── [C] GaussianNoise → SaltPepperNoise → GaussianBlur
+│     → FogEffect → RainStreaks → RandomErasing
+│
+└── → DataLoader → batch
+     │
+     └── train_one_epoch 内: CutMix / Mixup / identity (batch 级)
+```
+
+### 4.4 Soft labels 处理
+
+CutMix/Mixup 产生 soft labels（float tensor `(B, num_classes)`）:
+- `CrossEntropyLoss` 天然支持 float targets，无需修改 loss 计算
+- accuracy 改用 dominant label 计算（`labels.argmax(1)`）
+- CutMix/Mixup 激活时自动禁用 `label_smoothing`（soft labels 已提供类似正则化）
+
+### 4.5 配置管理
+
+增强参数独立为 `AugmentationConfig` frozen dataclass（约 40 个字段，全部有默认值），通过 `TrainConfig.augmentation` 引用。
+
+- 总开关: `use_augmentation=True/False`
+- 所有参数可通过 `dataclasses.replace()` 覆盖，预留超参数搜索可能性
+- 设 `use_augmentation=False` 时，管线退化为仅 `ToTensor + Normalize`
+
+### 4.6 `augment.py` 模块结构
+
+```
+augment.py
+├── PIL 级自定义变换
+│   └── JPEGCompressionPIL     — JPEG 压缩伪影模拟
+│
+├── Tensor 级自定义变换 (nn.Module)
+│   ├── GaussianNoise           — 高斯加性噪声
+│   ├── SaltPepperNoise         — 椒盐噪声
+│   ├── ProbabilisticGaussianBlur — 带概率控制的高斯模糊
+│   ├── FogEffect               — 雾化效果
+│   └── RainStreaks             — 雨滴条纹
+│
+├── 批次级增强 (函数, 在 train_one_epoch 中调用)
+│   ├── cutmix_data()           — CutMix 区域混合
+│   ├── mixup_data()            — Mixup 线性插值
+│   └── apply_batch_augmentation() — 随机选择: cutmix / mixup / identity
+│
+└── 管线构建
+    ├── build_train_transforms() — 完整训练变换管线
+    └── build_test_transforms()  — 仅归一化的测试管线
+```
+
+---
+
+## 5. 训练流程
+
+### 5.1 优化策略
 
 | 组件 | 选择 | 原因 |
 |---|---|---|
@@ -286,7 +410,7 @@ transforms.Compose([
 | **正则化** | weight_decay=5e-4 + BN | L2 正则化配合 BatchNorm 是 ResNet 的标准配置 |
 | **早停** | patience=20, min_delta=1e-4 | 防止过拟合，避免无效训练 |
 
-### 4.2 学习率变化
+### 5.2 学习率变化
 
 余弦退火将学习率从 0.1 平滑降到接近 0：
 
@@ -298,7 +422,7 @@ lr(t) = 0.5 * 0.1 * (1 + cos(π * t / 200))
 - Epoch 100: lr ≈ 0.05（中期减速）
 - Epoch 200: lr ≈ 0（精细收敛）
 
-### 4.3 预期性能
+### 5.3 预期性能
 
 在 RTX 4060 上，batch_size=128：
 - 单 epoch 约 5-8 秒
@@ -307,9 +431,9 @@ lr(t) = 0.5 * 0.1 * (1 + cos(π * t / 200))
 
 ---
 
-## 5. 迁移学习准备
+## 6. 迁移学习准备
 
-### 5.1 导出内容
+### 6.1 导出内容
 
 训练过程中，每当测试准确率创新高时，自动保存特征提取器权重：
 
@@ -324,7 +448,7 @@ torch.save(feature_state, path)
 
 导出的 `.pth` 文件包含 stem + layer1-4 的所有参数（约 11.17M - 51.3K ≈ 11.12M），不包含 FC 层。
 
-### 5.2 CIFAR-10 迁移用法
+### 6.2 CIFAR-10 迁移用法
 
 ```python
 from src.Q3.model import create_model
@@ -345,7 +469,7 @@ for name, param in model.named_parameters():
 # ... 使用类似的训练循环
 ```
 
-### 5.3 迁移策略选择
+### 6.3 迁移策略选择
 
 | 策略 | 做法 | 适用场景 |
 |---|---|---|
@@ -355,9 +479,9 @@ for name, param in model.named_parameters():
 
 ---
 
-## 6. 超参数搜索
+## 7. 超参数搜索
 
-### 6.1 演化算法
+### 7.1 演化算法
 
 使用 **(μ + λ) 演化策略**，比网格搜索更高效地探索混合连续/离散参数空间：
 
@@ -374,7 +498,7 @@ for name, param in model.named_parameters():
 - **变异**：连续参数乘性高斯扰动，离散参数随机重采样
 - **精英保留**：父代 + 后代合并，保留前 μ 个
 
-### 6.2 搜索空间
+### 7.2 搜索空间
 
 | 超参数 | 类型 | 范围/选项 | 搜索原因 |
 |---|---|---|---|
@@ -387,7 +511,7 @@ for name, param in model.named_parameters():
 
 搜索空间在 `config.py` 的 `SearchConfig` 中定义，可修改范围或设 `None` 跳过某个参数。
 
-### 6.3 适应度函数
+### 7.3 适应度函数
 
 **fitness = 10 × AIR + LDR**
 
@@ -397,7 +521,7 @@ for name, param in model.named_parameters():
 
 使用测试集指标以偏好泛化性好的配置。
 
-### 6.4 输出文件
+### 7.4 输出文件
 
 搜索结果保存为 `checkpoints/hp_search_results.json`：
 
@@ -415,7 +539,7 @@ for name, param in model.named_parameters():
 }
 ```
 
-### 6.5 训练时自动加载
+### 7.5 训练时自动加载
 
 `main.py` 默认检测 `hp_search_results.json`：
 - 文件存在 → 自动应用最优参数
@@ -423,7 +547,7 @@ for name, param in model.named_parameters():
 
 ---
 
-## 7. 使用方法
+## 8. 使用方法
 
 ### 超参数搜索
 

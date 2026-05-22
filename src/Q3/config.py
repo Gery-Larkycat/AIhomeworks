@@ -1,6 +1,6 @@
 """
 Configuration module for ResNet-18 CIFAR-100 training and hyperparameter search.
-ResNet-18 CIFAR-100 训练和超参数搜索配置模块。
+ResNet-18 CIFAR-18 CIFAR-100 训练和超参数搜索配置模块。
 
 All hyperparameters live here as a single source.
 所有超参数集中在此作为唯一来源。
@@ -8,6 +8,84 @@ All hyperparameters live here as a single source.
 
 from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class AugmentationConfig:
+    """
+    数据增强配置，独立于训练配置管理。
+    Data augmentation configuration, independent from training config.
+
+    Design: frozen dataclass with all fields having sensible defaults.
+    Each field can be overridden via dataclasses.replace() for search.
+    设计：冻结 dataclass，所有字段有合理默认值。
+    每个字段可通过 dataclasses.replace() 覆盖，便于超参数搜索。
+
+    19 种增强技术分 5 大类:
+      A. Geometric (几何变换): RandomCrop, HFlip, Affine, Perspective
+      B. Color (颜色变换): ColorJitter, Grayscale, AutoContrast,
+         Equalize, Posterize, Solarize
+      C. Noise & Degradation (噪声与降质): GaussianNoise, SaltPepper,
+         GaussianBlur, RandomErasing
+      D. Weather & Compression (天气与压缩): JPEGCompression, Fog, Rain
+      E. Batch Mixing (批次级混合): CutMix, Mixup
+    """
+
+    # -- Master switch / 总开关 --
+    use_augmentation: bool = True
+
+    # -- A. Geometric / 几何变换 --
+    random_crop_padding: int = 4
+    hflip_prob: float = 0.5
+    affine_degrees: float = 15.0
+    affine_translate: float = 0.1
+    affine_scale: tuple[float, float] = (0.9, 1.1)
+    affine_shear: float = 5.0
+    perspective_distortion: float = 0.2
+    perspective_prob: float = 0.3
+
+    # -- B. Color / 颜色变换 --
+    cj_brightness: float = 0.3
+    cj_contrast: float = 0.3
+    cj_saturation: float = 0.3
+    cj_hue: float = 0.15
+    grayscale_prob: float = 0.1
+    auto_contrast_prob: float = 0.2
+    equalize_prob: float = 0.1
+    posterize_bits: int = 4
+    posterize_prob: float = 0.1
+    solarize_threshold: float = 128.0
+    solarize_prob: float = 0.1
+
+    # -- C. Noise & Degradation / 噪声与降质 --
+    gaussian_noise_std: float = 0.02
+    gaussian_noise_prob: float = 0.5
+    salt_pepper_amount: float = 0.01
+    salt_pepper_prob: float = 0.2
+    gaussian_blur_kernel: int = 3
+    gaussian_blur_prob: float = 0.2
+    erasing_prob: float = 0.25
+    erasing_scale: tuple[float, float] = (0.02, 0.2)
+
+    # -- D. Weather & Compression / 天气与压缩 --
+    jpeg_quality: tuple[int, int] = (30, 70)
+    jpeg_prob: float = 0.2
+    fog_intensity: tuple[float, float] = (0.05, 0.2)
+    fog_prob: float = 0.15
+    rain_drops: tuple[int, int] = (3, 10)
+    rain_angle: tuple[float, float] = (-30.0, 30.0)
+    rain_prob: float = 0.15
+
+    # -- E. Batch mixing / 批次级混合 --
+    use_cutmix: bool = True
+    cutmix_alpha: float = 1.0
+    use_mixup: bool = True
+    mixup_alpha: float = 0.2
+    # P(applying either cutmix or mixup per batch);
+    # within that, cutmix 4:3 mixup ratio (matches 40%/30% plan)
+    # 每个批次应用 CutMix 或 Mixup 的概率;
+    # 其中 CutMix:Mixup = 4:3（对应 40%/30% 方案）
+    mix_prob: float = 0.7
 
 
 @dataclass(frozen=True)
@@ -53,6 +131,9 @@ class TrainConfig:
         # Windows 下 spawn 开销大于并行收益；Linux 可设 2-4
     )
     pin_memory: bool = True  # Faster CPU→GPU transfer / 加速 CPU→GPU 数据传输
+
+    # -- Data augmentation / 数据增强 --
+    augmentation: AugmentationConfig = AugmentationConfig()
 
     # -- CIFAR-100 normalization stats / CIFAR-100 归一化统计量 --
     mean: tuple[float, ...] = (0.5071, 0.4867, 0.4408)

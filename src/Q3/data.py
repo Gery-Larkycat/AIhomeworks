@@ -2,48 +2,50 @@
 CIFAR-100 data loading module.
 CIFAR-100 数据加载模块。
 
-No additional augmentation — only Normalize with CIFAR-100 statistics.
-不做额外增强——仅使用 CIFAR-100 统计量进行归一化。
+Train transforms delegate to augment.py for rich augmentation;
+test transforms use only ToTensor + Normalize.
+训练变换委托给 augment.py 实现丰富增强;
+测试变换仅使用 ToTensor + Normalize。
 """
 
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torchvision import datasets
 
+from .augment import build_test_transforms, build_train_transforms
 from .config import TrainConfig
 
 
-def get_transforms(config: TrainConfig) -> transforms.Compose:
+def get_cifar100_loaders(
+    config: TrainConfig,
+) -> tuple[DataLoader, DataLoader]:
     """
-    Build transform pipeline with normalization only.
-    构建仅含归一化的变换管线。
-    """
-    return transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=config.mean, std=config.std),
-    ])
+    Create CIFAR-100 train and test DataLoaders with separate transforms.
+    创建 CIFAR-100 训练和测试 DataLoader，分别使用不同变换管线。
 
-
-def get_cifar100_loaders(config: TrainConfig) -> tuple[DataLoader, DataLoader]:
-    """
-    Create CIFAR-100 train and test DataLoaders.
-    创建 CIFAR-100 训练和测试数据加载器。
+    Train: full augmentation pipeline from augment.py.
+    Test:  ToTensor + Normalize only (no augmentation).
+    训练集: augment.py 的完整增强管线。
+    测试集: 仅 ToTensor + Normalize（无增强）。
 
     Returns:
         (train_loader, test_loader)
     """
-    transform = get_transforms(config)
+    train_transform = build_train_transforms(
+        config.augmentation, config
+    )
+    test_transform = build_test_transforms(config)
 
     train_dataset = datasets.CIFAR100(
         root=str(config.data_root),
         train=True,
         download=True,
-        transform=transform,
+        transform=train_transform,
     )
     test_dataset = datasets.CIFAR100(
         root=str(config.data_root),
         train=False,
         download=True,
-        transform=transform,
+        transform=test_transform,
     )
 
     train_loader = DataLoader(
