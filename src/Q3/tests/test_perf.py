@@ -1,15 +1,15 @@
 """
-Performance benchmark for GPU training pipeline optimizations.
-GPU 训练流水线优化的性能基准测试。
+GPU training pipeline: optimization verification, profiling, and benchmarks.
+GPU 训练流水线：优化验证、性能分析和基准测试。
 
-Verifies:
-1. Optimizations are active (cudnn.benchmark, non_blocking, set_to_none)
-2. Throughput improvement: optimized vs naive (per-batch .item()) pipeline
-验证：
-1. 优化已生效（cudnn.benchmark, non_blocking, set_to_none）
-2. 吞吐量提升：优化管线 vs 朴素管线（每 batch 调 .item()）
+Sections:
+  TestOptimizationsActive  — 静态检查优化已生效（快速，无需 GPU）
+  TestGPUThroughput         — 合成数据吞吐量对比（需 GPU）
+  TestPipelineBreakdown     — 逐阶段计时定位瓶颈（需 GPU）
 """
 
+import dataclasses
+import inspect
 import time
 
 import pytest
@@ -18,31 +18,26 @@ import torch.nn as nn
 from torch.optim import SGD
 from torch.utils.data import DataLoader, TensorDataset
 
+from src.Q3.config import TrainConfig
+from src.Q3.data import get_cifar100_loaders
 from src.Q3.model import create_model
 from src.Q3.train import train_one_epoch
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def _make_synthetic(batch_size: int = 256, n: int = 2048):
-    """Create synthetic CIFAR-shaped loaders / 创建合成 CIFAR 形状的 loader。"""
+    """Create synthetic CIFAR-shaped DataLoaders."""
     images = torch.randn(n, 3, 32, 32)
     labels = torch.randint(0, 100, (n,))
-    train_ds = TensorDataset(images, labels)
-    test_ds = TensorDataset(images[:512], labels[:512])
-    return (
-        DataLoader(train_ds, batch_size=batch_size, pin_memory=True),
-        DataLoader(test_ds, batch_size=batch_size, pin_memory=True),
-    )
+    ds = TensorDataset(images, labels)
+    return DataLoader(ds, batch_size=batch_size, pin_memory=True)
 
 
 def _train_naive_one_epoch(model, loader, optimizer, criterion, device):
-    """
-    Naive pipeline: .item() on every batch (the un-optimized version).
-    朴素管线：每 batch 调 .item()（未优化版本）。
-    """
+    """Un-optimized baseline: .item() on every batch."""
     model.train()
     total_loss = 0.0
     total_correct = 0
@@ -54,229 +49,260 @@ def _train_naive_one_epoch(model, loader, optimizer, criterion, device):
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
-        # Naive: per-batch sync / 朴素：每 batch 同步
         total_loss += loss.item() * images.size(0)
         total_correct += (outputs.argmax(1) == labels).sum().item()
         total_samples += images.size(0)
     return total_loss / total_samples, total_correct / total_samples
 
 
-# ---------------------------------------------------------------------------
-# Test: optimizations are active
-# ---------------------------------------------------------------------------
+def _gpu_only(cls):
+    """Skip entire class when no CUDA."""
+    return pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="No CUDA"
+    )(cls)
+
+
+# ===========================================================================
+# 1. Static checks — fast, no GPU needed
+# ===========================================================================
 
 
 class TestOptimizationsActive:
-    """Verify each optimization is actually enabled."""
+    """Verify optimizations are present in source code."""
 
-    def test_cudnn_benchmark_set_in_train(self):
-        """train() 应启用 cudnn.benchmark。"""
-        if not torch.cuda.is_available():
-            pytest.skip("No CUDA")
-        old_val = torch.backends.cudnn.benchmark
-        torch.backends.cudnn.benchmark = True
-        assert torch.backends.cudnn.benchmark is True
-        torch.backends.cudnn.benchmark = old_val
-
-    def test_non_blocking_used(self):
-        """验证 train_one_epoch 使用 non_blocking 传输。"""
-        import inspect
+    def test_non_blocking(self):
         src = inspect.getsource(train_one_epoch)
         assert "non_blocking=True" in src
 
-    def test_set_to_none_used(self):
-        """验证 train_one_epoch 使用 set_to_none=True。"""
-        import inspect
+    def test_set_to_none(self):
         src = inspect.getsource(train_one_epoch)
         assert "set_to_none=True" in src
 
-    def test_amp_used_in_train(self):
-        """验证 train_one_epoch 使用 AMP autocast。"""
-        import inspect
+    def test_amp_autocast_in_train(self):
         src = inspect.getsource(train_one_epoch)
         assert "autocast" in src
-        # Should use scaler passed as param, not create one
-        assert "scaler.scale(" in src or "scaler.step(" in src
+        assert "scaler.scale(" in src
 
-    def test_amp_used_in_evaluate(self):
-        """验证 evaluate 使用 AMP autocast。"""
-        import inspect
+    def test_amp_autocast_in_evaluate(self):
         from src.Q3.evaluate import evaluate
         src = inspect.getsource(evaluate)
         assert "autocast" in src
 
-    def test_evaluate_no_per_batch_item(self):
-        """验证 evaluate 不再每 batch 调 .item()。"""
-        import inspect
+    def test_evaluate_accumulates_on_gpu(self):
+        """evaluate should not call .item() inside the loop."""
         from src.Q3.evaluate import evaluate
         src = inspect.getsource(evaluate)
-        lines = src.split("\n")
         in_loop = False
-        for line in lines:
+        for line in src.splitlines():
             if "for " in line and "loader" in line:
                 in_loop = True
                 continue
             if in_loop and line.strip() and not line.startswith(" " * 8):
                 in_loop = False
             if in_loop and ".item()" in line:
-                pytest.fail(
-                    "evaluate() should not call .item() "
-                    "inside the loop"
-                )
-
-    def test_evaluate_no_per_batch_item(self):
-        """验证 evaluate 不再每 batch 调 .item()。"""
-        import inspect
-        from src.Q3.evaluate import evaluate
-        src = inspect.getsource(evaluate)
-        # Should NOT have .item() inside the loop body
-        # loop 内不应有 .item()
-        # Only allowed at the end (return line)
-        lines = src.split("\n")
-        in_loop = False
-        for line in lines:
-            if "for " in line and "loader" in line:
-                in_loop = True
-                continue
-            if in_loop and line.strip() and not line.startswith(" " * 8):
-                in_loop = False
-            if in_loop and ".item()" in line:
-                pytest.fail(
-                    "evaluate() should not call .item() "
-                    "inside the loop"
-                )
+                pytest.fail("evaluate() calls .item() inside the loop")
 
 
-# ---------------------------------------------------------------------------
-# Benchmark: throughput comparison
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 2. GPU benchmarks — synthetic data
+# ===========================================================================
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="No CUDA"
-)
-class TestGPUTThroughput:
-    """
-    Compare optimized vs naive training throughput on GPU.
-    对比优化 vs 朴素训练管线的 GPU 吞吐量。
-    """
+@_gpu_only
+class TestGPUThroughput:
+    """Throughput comparison: optimized vs naive pipeline."""
 
-    @pytest.fixture()
+    @pytest.fixture(autouse=True)
     def setup(self):
-        """Create model, loaders, optimizer, criterion on GPU."""
-        device = torch.device("cuda")
-        model = create_model(num_classes=100).to(device)
-        optimizer = SGD(
-            model.parameters(), lr=0.01, momentum=0.9
+        self.device = torch.device("cuda")
+        self.model = create_model(100).to(self.device)
+        self.optimizer = SGD(
+            self.model.parameters(), lr=0.01, momentum=0.9
         )
-        criterion = nn.CrossEntropyLoss()
-        train_loader, test_loader = _make_synthetic(
-            batch_size=256, n=2048
-        )
-        # Warm up GPU / GPU 预热
-        torch.cuda.synchronize()
-        return {
-            "model": model,
-            "optimizer": optimizer,
-            "criterion": criterion,
-            "device": device,
-            "train_loader": train_loader,
-            "test_loader": test_loader,
-        }
-
-    def _measure_throughput(self, train_fn, setup, epochs=5):
-        """
-        Measure average throughput (samples/sec) over multiple epochs.
-        测量多个 epoch 的平均吞吐量（样本/秒）。
-        """
-        device = setup["device"]
-        total_samples = 0
-        torch.cuda.synchronize()
-        start = time.perf_counter()
-
-        for _ in range(epochs):
-            train_fn(
-                setup["model"],
-                setup["train_loader"],
-                setup["optimizer"],
-                setup["criterion"],
-                device,
-            )
-
-        torch.cuda.synchronize()
-        elapsed = time.perf_counter() - start
-
-        n_samples = len(setup["train_loader"].dataset)
-        total_samples = n_samples * epochs
-        throughput = total_samples / elapsed
-        return throughput, elapsed
-
-    def test_optimized_faster_than_naive(self, setup):
-        """
-        Optimized pipeline (AMP + tensor accum) vs naive (.item() per batch).
-        优化管线（AMP + 张量累积）vs 朴素管线（每 batch 调 .item()）。
-        """
+        self.criterion = nn.CrossEntropyLoss()
+        self.loader = _make_synthetic(batch_size=256, n=2048)
         torch.backends.cudnn.benchmark = True
+        torch.cuda.synchronize()
 
-        # Naive pipeline / 朴素管线
-        naive_tput, naive_time = self._measure_throughput(
-            _train_naive_one_epoch, setup, epochs=5
+    def _measure(self, fn, epochs=5):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(epochs):
+            fn()
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - t0
+        n = len(self.loader.dataset) * epochs
+        return n / elapsed, elapsed
+
+    def test_optimized_vs_naive(self):
+        # Naive / 朴素
+        naive_tput, naive_t = self._measure(
+            lambda: _train_naive_one_epoch(
+                self.model, self.loader,
+                self.optimizer, self.criterion, self.device,
+            )
         )
-
-        # Optimized pipeline with AMP / 带 AMP 的优化管线
+        # Optimized + AMP / 优化 + AMP
         scaler = torch.amp.GradScaler("cuda")
 
-        def optimized_fn(
-            model, loader, optimizer, criterion, device
-        ):
-            return train_one_epoch(
-                model, loader, optimizer, criterion,
-                device, epoch=1, scaler=scaler,
+        def opt_fn():
+            train_one_epoch(
+                self.model, self.loader, self.optimizer,
+                self.criterion, self.device, epoch=1, scaler=scaler,
             )
 
-        opt_tput, opt_time = self._measure_throughput(
-            optimized_fn, setup, epochs=5
-        )
-
+        opt_tput, opt_t = self._measure(opt_fn)
         speedup = opt_tput / naive_tput
         print(
-            f"\n  Naive:  {naive_tput:.0f} samples/sec"
-            f" ({naive_time:.3f}s)"
+            f"\n  Naive FP32:     {naive_tput:.0f} s/s ({naive_t:.2f}s)"
         )
         print(
-            f"  Optimized (AMP): {opt_tput:.0f} samples/sec"
-            f" ({opt_time:.3f}s)"
+            f"  Optimized+AMP:  {opt_tput:.0f} s/s ({opt_t:.2f}s)"
         )
-        print(f"  Speedup: {speedup:.2f}x")
+        print(f"  Speedup:        {speedup:.2f}x")
+        assert speedup >= 1.5
 
-        # AMP + optimizations should give >= 1.5x speedup
-        assert speedup >= 1.5, (
-            f"Optimized pipeline ({opt_tput:.0f} s/s) "
-            f"should be >= 1.5x faster than naive "
-            f"({naive_tput:.0f} s/s), "
-            f"got {speedup:.2f}x"
-        )
-
-    def test_absolute_throughput_reasonable(self, setup):
-        """
-        Throughput with AMP should be reasonable for RTX 4060.
-        AMP 下 RTX 4060 的吞吐量应合理。
-        """
-        torch.backends.cudnn.benchmark = True
+    def test_absolute_throughput(self):
         scaler = torch.amp.GradScaler("cuda")
-        tput, _ = self._measure_throughput(
-            lambda m, loader, o, c, d: train_one_epoch(
-                m, loader, o, c, d, epoch=1, scaler=scaler
+        tput, _ = self._measure(
+            lambda: train_one_epoch(
+                self.model, self.loader, self.optimizer,
+                self.criterion, self.device, epoch=1, scaler=scaler,
             ),
-            setup,
             epochs=3,
         )
         print(f"\n  Throughput: {tput:.0f} samples/sec")
-        # With small synthetic data (8 batches/epoch), kernel launch
-        # overhead dominates. This threshold just catches gross issues.
-        # 合成数据太小（8 batch/epoch），kernel launch 开销占主导。
-        # 此阈值仅用于检测严重问题。
-        assert tput > 1500, (
-            f"Throughput {tput:.0f} s/s is too low, "
-            f"expected > 1500 s/s"
+        assert tput > 1500
+
+
+# ===========================================================================
+# 3. Pipeline breakdown — per-phase timing with real data
+# ===========================================================================
+
+
+@_gpu_only
+class TestPipelineBreakdown:
+    """
+    Per-phase timing and bottleneck identification.
+    Uses real CIFAR-100 to capture actual data loading cost.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.device = torch.device("cuda")
+        self.config = TrainConfig(num_workers=0, batch_size=256)
+        self.train_loader, _ = get_cifar100_loaders(self.config)
+        self.model = create_model(100).to(self.device)
+        self.optimizer = SGD(
+            self.model.parameters(), lr=0.01, momentum=0.9
         )
+        self.criterion = nn.CrossEntropyLoss()
+        torch.backends.cudnn.benchmark = True
+        self.model.train()
+        torch.cuda.synchronize()
+
+    def test_phase_timing(self):
+        """
+        Break down: data_load → h2d → forward → backward → opt_step.
+        逐阶段分解计时。
+        """
+        device = self.device
+        loader = self.train_loader
+
+        # Warmup
+        for i, (img, lbl) in enumerate(loader):
+            img = img.to(device, non_blocking=True)
+            lbl = lbl.to(device, non_blocking=True)
+            self.optimizer.zero_grad(set_to_none=True)
+            loss = self.criterion(self.model(img), lbl)
+            loss.backward()
+            self.optimizer.step()
+            if i >= 2:
+                break
+        torch.cuda.synchronize()
+
+        # Measure
+        phases = {
+            "data_load": 0.0,
+            "h2d": 0.0,
+            "forward": 0.0,
+            "backward": 0.0,
+            "opt_step": 0.0,
+        }
+        prev_end = time.perf_counter()
+
+        for images, labels in loader:
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            torch.cuda.synchronize()
+            t1 = time.perf_counter()
+
+            self.optimizer.zero_grad(set_to_none=True)
+            outputs = self.model(images)
+            loss = self.criterion(outputs, labels)
+            torch.cuda.synchronize()
+            t2 = time.perf_counter()
+
+            loss.backward()
+            torch.cuda.synchronize()
+            t3 = time.perf_counter()
+
+            self.optimizer.step()
+            torch.cuda.synchronize()
+            t4 = time.perf_counter()
+
+            phases["data_load"] += t0 - prev_end
+            phases["h2d"] += t1 - t0
+            phases["forward"] += t2 - t1
+            phases["backward"] += t3 - t2
+            phases["opt_step"] += t4 - t3
+            prev_end = t4
+
+        total = sum(phases.values())
+        bottleneck = max(phases, key=phases.get)
+
+        print(f"\n  === Phase timing ({len(loader)} batches) ===")
+        for name, t in phases.items():
+            pct = t / total * 100
+            print(f"  {name:12s}: {t:.3f}s ({pct:.1f}%)")
+        print(f"  {'total':12s}: {total:.3f}s")
+        print(f"  Bottleneck: {bottleneck}")
+        print(
+            f"  Throughput: "
+            f"{len(loader.dataset) / total:.0f} samples/sec"
+        )
+
+    def test_num_workers_effect(self):
+        """num_workers=0 vs 2 vs 4 with real data."""
+        for nw in [0, 2, 4]:
+            cfg = dataclasses.replace(self.config, num_workers=nw)
+            loader, _ = get_cifar100_loaders(cfg)
+            model = create_model(100).to(self.device)
+            opt = SGD(model.parameters(), lr=0.01, momentum=0.9)
+            crit = nn.CrossEntropyLoss()
+            model.train()
+
+            # Warmup 1 batch
+            for img, lbl in loader:
+                img = img.to(self.device, non_blocking=True)
+                lbl = lbl.to(self.device, non_blocking=True)
+                opt.zero_grad(set_to_none=True)
+                crit(model(img), lbl).backward()
+                opt.step()
+                break
+            torch.cuda.synchronize()
+
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            train_one_epoch(model, loader, opt, crit, self.device, 1)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - t0
+
+            tput = len(loader.dataset) / elapsed
+            print(
+                f"  num_workers={nw}: "
+                f"{tput:.0f} s/s ({elapsed:.2f}s)"
+            )
