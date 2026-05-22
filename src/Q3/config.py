@@ -49,7 +49,8 @@ class TrainConfig:
 
     # -- Data loading / 数据加载 --
     num_workers: int = (
-        4  # Windows requires if __name__ guard when > 0 / Windows 下需 if __name__ 守卫
+        0  # Windows spawn overhead > parallel benefit; set 2-4 on Linux
+        # Windows 下 spawn 开销大于并行收益；Linux 可设 2-4
     )
     pin_memory: bool = True  # Faster CPU→GPU transfer / 加速 CPU→GPU 数据传输
 
