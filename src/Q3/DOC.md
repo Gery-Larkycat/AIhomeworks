@@ -150,6 +150,8 @@ src/Q3/
 | `momentum` | `0.9` | SGD 动量 |
 | `weight_decay` | `5e-4` | L2 正则化系数 |
 | `label_smoothing` | `0.1` | 标签平滑系数 |
+| `patience` | `20` | 早停等待轮数（无改善连续 N 轮则停止） |
+| `min_delta` | `1e-4` | 视为改善的最小准确率增量 |
 | `scheduler_t_max` | `200` | 余弦退火周期（= epochs） |
 | `mean` | `(0.5071, 0.4867, 0.4408)` | CIFAR-100 均值 |
 | `std` | `(0.2675, 0.2565, 0.2761)` | CIFAR-100 标准差 |
@@ -192,8 +194,9 @@ transforms.Compose([
 
 **`train`**（完整训练循环）：
 - 创建 `SGD` 优化器 + `CosineAnnealingLR` 调度器 + `CrossEntropyLoss(label_smoothing=0.1)`
-- 每 epoch：训练 → 评估 → 调整学习率 → 记录历史 → 保存最佳模型
+- 每 epoch：训练 → 评估 → 调整学习率 → 记录历史 → 保存最佳模型 → 早停检查
 - 当测试准确率创新高时，同时保存完整检查点和特征提取器
+- **早停策略**：连续 `patience` 轮测试准确率没有超过 `min_delta` 的改善则提前终止
 - 返回训练历史字典（每轮的 train_loss, train_acc, test_loss, test_acc, lr）
 
 ### 3.5 `evaluate.py` — 评估
@@ -249,6 +252,7 @@ transforms.Compose([
 | **学习率调度** | CosineAnnealingLR (T_max=200) | 平滑衰减，后期学习率趋近 0 有利于收敛到更优解 |
 | **损失函数** | CrossEntropyLoss (label_smoothing=0.1) | 100 类分类中，标签平滑防止模型过度自信，提升泛化能力 |
 | **正则化** | weight_decay=5e-4 + BN | L2 正则化配合 BatchNorm 是 ResNet 的标准配置 |
+| **早停** | patience=20, min_delta=1e-4 | 防止过拟合，避免无效训练 |
 
 ### 4.2 学习率变化
 

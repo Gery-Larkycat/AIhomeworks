@@ -93,6 +93,7 @@ def train(
         "lr": [],
     }
     best_acc = 0.0
+    epochs_without_improvement = 0  # Early stopping counter / 早停计数器
 
     # Import here to avoid circular dependency / 延迟导入避免循环依赖
     from .checkpoint import save_best_checkpoint, save_feature_extractor
@@ -119,12 +120,19 @@ def train(
             f"| Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}"
         )
 
-        # Save best model / 保存最佳模型
-        if test_acc > best_acc:
+        # Save best model + early stopping check / 保存最佳模型 + 早停判断
+        if test_acc > best_acc + config.min_delta:
             best_acc = test_acc
+            epochs_without_improvement = 0
             save_best_checkpoint(model, optimizer, epoch, test_acc, config)
             save_feature_extractor(model, config)
             print(f"  ** New best accuracy: {best_acc:.4f} **")
+        else:
+            epochs_without_improvement += 1
+            print(f"  No improvement for {epochs_without_improvement}/{config.patience} epochs")
+            if epochs_without_improvement >= config.patience:
+                print(f"\nEarly stopping triggered after {epoch} epochs / 触发早停")
+                break
 
     print(f"\nTraining complete. Best test accuracy: {best_acc:.4f}")
     return history

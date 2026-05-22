@@ -33,6 +33,10 @@ class TrainConfig:
     weight_decay: float = 5e-4
     label_smoothing: float = 0.1
 
+    # -- Early stopping / 早停 --
+    patience: int = 20  # Epochs to wait without improvement / 无改善等待轮数
+    min_delta: float = 1e-4  # Minimum accuracy improvement to qualify / 视为改善的最小准确率增量
+
     # -- Scheduler / 学习率调度 --
     scheduler_t_max: int = 200  # Cosine annealing period / 余弦退火周期
 
