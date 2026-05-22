@@ -80,22 +80,49 @@ class TestOptimizationsActive:
 
     def test_non_blocking_used(self):
         """验证 train_one_epoch 使用 non_blocking 传输。"""
-        # Check source code contains non_blocking=True
-        # 检查源码包含 non_blocking=True
         import inspect
         src = inspect.getsource(train_one_epoch)
-        assert "non_blocking=True" in src, (
-            "train_one_epoch should use non_blocking=True "
-            "for data transfer"
-        )
+        assert "non_blocking=True" in src
 
     def test_set_to_none_used(self):
         """验证 train_one_epoch 使用 set_to_none=True。"""
         import inspect
         src = inspect.getsource(train_one_epoch)
-        assert "set_to_none=True" in src, (
-            "train_one_epoch should use zero_grad(set_to_none=True)"
-        )
+        assert "set_to_none=True" in src
+
+    def test_amp_used_in_train(self):
+        """验证 train_one_epoch 使用 AMP autocast。"""
+        import inspect
+        src = inspect.getsource(train_one_epoch)
+        assert "autocast" in src
+        # Should use scaler passed as param, not create one
+        assert "scaler.scale(" in src or "scaler.step(" in src
+
+    def test_amp_used_in_evaluate(self):
+        """验证 evaluate 使用 AMP autocast。"""
+        import inspect
+        from src.Q3.evaluate import evaluate
+        src = inspect.getsource(evaluate)
+        assert "autocast" in src
+
+    def test_evaluate_no_per_batch_item(self):
+        """验证 evaluate 不再每 batch 调 .item()。"""
+        import inspect
+        from src.Q3.evaluate import evaluate
+        src = inspect.getsource(evaluate)
+        lines = src.split("\n")
+        in_loop = False
+        for line in lines:
+            if "for " in line and "loader" in line:
+                in_loop = True
+                continue
+            if in_loop and line.strip() and not line.startswith(" " * 8):
+                in_loop = False
+            if in_loop and ".item()" in line:
+                pytest.fail(
+                    "evaluate() should not call .item() "
+                    "inside the loop"
+                )
 
     def test_evaluate_no_per_batch_item(self):
         """验证 evaluate 不再每 batch 调 .item()。"""
@@ -186,13 +213,9 @@ class TestGPUTThroughput:
 
     def test_optimized_faster_than_naive(self, setup):
         """
-        Optimized pipeline should be faster than naive (.item() per batch).
-        优化管线应比朴素管线（每 batch 调 .item()）更快。
-
-        Measures both and asserts the optimized version has >= 10% improvement.
-        测量两者并断言优化版本有 >= 10% 的提升。
+        Optimized pipeline (AMP + tensor accum) vs naive (.item() per batch).
+        优化管线（AMP + 张量累积）vs 朴素管线（每 batch 调 .item()）。
         """
-        # Enable cudnn.benchmark for fair comparison
         torch.backends.cudnn.benchmark = True
 
         # Naive pipeline / 朴素管线
@@ -200,12 +223,15 @@ class TestGPUTThroughput:
             _train_naive_one_epoch, setup, epochs=5
         )
 
-        # Optimized pipeline / 优化管线
+        # Optimized pipeline with AMP / 带 AMP 的优化管线
+        scaler = torch.amp.GradScaler("cuda")
+
         def optimized_fn(
             model, loader, optimizer, criterion, device
         ):
             return train_one_epoch(
-                model, loader, optimizer, criterion, device, epoch=1
+                model, loader, optimizer, criterion,
+                device, epoch=1, scaler=scaler,
             )
 
         opt_tput, opt_time = self._measure_throughput(
@@ -218,29 +244,29 @@ class TestGPUTThroughput:
             f" ({naive_time:.3f}s)"
         )
         print(
-            f"  Optimized: {opt_tput:.0f} samples/sec"
+            f"  Optimized (AMP): {opt_tput:.0f} samples/sec"
             f" ({opt_time:.3f}s)"
         )
         print(f"  Speedup: {speedup:.2f}x")
 
-        # Optimized should be at least 10% faster
-        # 优化版本应至少快 10%
-        assert speedup >= 1.1, (
+        # AMP + optimizations should give >= 1.5x speedup
+        assert speedup >= 1.5, (
             f"Optimized pipeline ({opt_tput:.0f} s/s) "
-            f"should be >= 10% faster than naive "
+            f"should be >= 1.5x faster than naive "
             f"({naive_tput:.0f} s/s), "
             f"got {speedup:.2f}x"
         )
 
     def test_absolute_throughput_reasonable(self, setup):
         """
-        Throughput should be reasonable for RTX 4060 with ResNet-18.
-        RTX 4060 上 ResNet-18 的吞吐量应合理。
+        Throughput with AMP should be reasonable for RTX 4060.
+        AMP 下 RTX 4060 的吞吐量应合理。
         """
         torch.backends.cudnn.benchmark = True
+        scaler = torch.amp.GradScaler("cuda")
         tput, _ = self._measure_throughput(
             lambda m, loader, o, c, d: train_one_epoch(
-                m, loader, o, c, d, epoch=1
+                m, loader, o, c, d, epoch=1, scaler=scaler
             ),
             setup,
             epochs=3,

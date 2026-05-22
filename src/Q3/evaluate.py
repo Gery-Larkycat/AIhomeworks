@@ -13,7 +13,10 @@ from torch.utils.data import DataLoader
 
 @torch.no_grad()
 def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    use_amp: bool = False,
 ) -> tuple[float, float]:
     """
     Evaluate model, returning (loss, accuracy).
@@ -31,8 +34,9 @@ def evaluate(
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            outputs = model(images)
+            loss = criterion(outputs, labels)
         total_loss += loss * images.size(0)
         total_correct += (outputs.argmax(dim=1) == labels).sum()
         total_samples += images.size(0)

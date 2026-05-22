@@ -96,10 +96,14 @@ def train_one_epoch(
     criterion: nn.Module,
     device: torch.device,
     epoch: int,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> tuple[float, float]:
     """
     Train for one epoch, returning (loss, accuracy).
     训练一个 epoch，返回 (损失, 准确率)。
+
+    Uses AMP (mixed precision) when scaler is provided.
+    提供 scaler 时启用 AMP（混合精度）训练。
 
     Accumulates metrics as GPU tensors to avoid per-batch GPU→CPU sync
     (loss.item() forces synchronization, stalling the pipeline).
@@ -107,6 +111,7 @@ def train_one_epoch(
     （loss.item() 会强制同步，阻塞流水线）。
     """
     model.train()
+    use_amp = scaler is not None
     # Accumulate on GPU, sync once at epoch end
     # 在 GPU 上累积，epoch 结束时一次性同步
     total_loss = torch.tensor(0.0, device=device)
@@ -122,10 +127,18 @@ def train_one_epoch(
         # set_to_none=True avoids memset overhead
         # set_to_none=True 避免 memset 开销
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         # Accumulate as tensors (no .item() → no sync)
         # 以张量累积（不用 .item() → 不触发同步）
@@ -183,6 +196,11 @@ def train(
     scheduler = create_scheduler(optimizer, config)
     criterion = create_criterion(config)
 
+    # AMP GradScaler for mixed precision on CUDA
+    # CUDA 上混合精度训练的 GradScaler
+    use_amp = config.use_amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
     history: dict[str, list[float]] = {
         "train_loss": [],
         "train_acc": [],
@@ -207,10 +225,10 @@ def train(
 
         train_loss, train_acc = train_one_epoch(
             model, train_loader, optimizer, criterion,
-            device, epoch,
+            device, epoch, scaler=scaler,
         )
         test_loss, test_acc = evaluate(
-            model, test_loader, device
+            model, test_loader, device, use_amp=use_amp
         )
         if scheduler is not None:
             scheduler.step()

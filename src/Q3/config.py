@@ -36,6 +36,7 @@ class TrainConfig:
     # -- Optimizer & Scheduler / 优化器与调度器 --
     optimizer_type: str = "sgd"  # "sgd", "adam", "adamw", "rmsprop", "nadam"
     scheduler_type: str = "cosine"  # "cosine", "constant", "step"
+    use_amp: bool = False  # Mixed precision (FP16) training / 混合精度训练
 
     # -- Early stopping / 早停 --
     patience: int = 6  # Epochs to wait without improvement / 无改善等待轮数

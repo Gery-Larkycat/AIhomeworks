@@ -98,6 +98,13 @@ def parse_args() -> argparse.Namespace:
             " / 忽略已有搜索结果"
         ),
     )
+    parser.add_argument(
+        "--amp", action="store_true",
+        help=(
+            "Enable mixed precision (FP16) training"
+            " / 启用混合精度训练"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -113,6 +120,8 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         overrides["batch_size"] = args.batch_size
     if args.lr is not None:
         overrides["learning_rate"] = args.lr
+    if args.amp:
+        overrides["use_amp"] = True
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
     return TrainConfig(**overrides)
