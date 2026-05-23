@@ -5,8 +5,8 @@ ResNet-18 CIFAR-100 训练和评估的主入口。
 Orchestrates: model creation → data loading → training → evaluation → visualization.
 编排：模型创建 → 数据加载 → 训练 → 评估 → 可视化。
 
-Supports evolutionary hyperparameter search via --search / --search-only.
-通过 --search / --search-only 支持进化超参数搜索。
+Supports hyperparameter search via --search / --search-only (skorch + sklearn).
+通过 --search / --search-only 支持超参数搜索（skorch + sklearn）。
 
 IMPORTANT on Windows: This file uses if __name__ == "__main__" guard
 because DataLoader with num_workers > 0 requires it on Windows.
@@ -92,11 +92,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--search-strategy",
-        choices=["evolutionary", "random", "grid"],
+        choices=["halving-random", "random", "grid"],
         default=None,
         help=(
-            "Search strategy: evolutionary (default), random, grid"
-            " / 搜索策略：演化（默认）、随机、网格"
+            "Search strategy: halving-random (default), random, grid"
+            " / 搜索策略：halving-random（默认）、随机、网格"
         ),
     )
     parser.add_argument(
@@ -199,8 +199,7 @@ def main() -> None:
         search_cfg = SearchConfig(**search_overrides)
 
         best_params = run_search(
-            config, train_loader,
-            search_cfg=search_cfg,
+            config, search_cfg=search_cfg,
         )
 
         if args.search_only:

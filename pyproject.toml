@@ -10,6 +10,9 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pytest",
+    "skorch>=1.4.0",
+    "scikit-learn>=1.8.0",
+    "scipy>=1.17.1",
 ]
 
 # PyTorch CUDA 12.4 wheel index / PyTorch CUDA 12.4 轮子索引

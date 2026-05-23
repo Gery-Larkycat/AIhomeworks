@@ -125,8 +125,8 @@ class TrainConfig:
     # -- Scheduler / 学习率调度 --
     scheduler_t_max: int = 100  # Cosine annealing period / 余弦退火周期
 
-    # -- Validation split / 验证集划分 --
-    val_ratio: float = 0.1  # 从训练集划出 10% 作为验证集 / 10% of training data for validation
+    # -- Scheduler / 学习率调度 --
+    scheduler_t_max: int = 100  # Cosine annealing period / 余弦退火周期
 
     # -- Data loading / 数据加载 --
     num_workers: int = (
@@ -144,66 +144,34 @@ class TrainConfig:
 
 
 @dataclass(frozen=True)
-class HyperparamRange:
-    """
-    Range definition for a searchable continuous hyperparameter.
-    可搜索连续超参数的范围定义。
-
-    distribution: "uniform" (线性均匀) or "log_uniform" (对数均匀).
-    log_uniform 适用于跨越多个数量级的参数（如 learning_rate, weight_decay）。
-    """
-
-    low: float
-    high: float
-    distribution: str = "uniform"  # "uniform" or "log_uniform"
-
-
-@dataclass(frozen=True)
 class SearchConfig:
     """
-    Configuration for hyperparameter search.
-    超参数搜索配置。
+    超参数搜索配置，用于 skorch + sklearn 搜索管线。
+    Search config for skorch + sklearn hyperparameter search pipeline.
 
-    Supports three strategies: evolutionary, random, grid.
-    支持三种策略：演化搜索、随机搜索、网格搜索。
+    搜索空间（lr, momentum, weight_decay）以 scipy.stats 分布形式
+    硬编码在 search.py 中；此处仅控制搜索策略和行为参数。
 
-    All search-related settings live here. Set any parameter range to None to
-    exclude it from the search. search.py reads from this config exclusively.
-    所有搜索相关设置集中在此。将任意参数范围设为 None 即可跳过该参数的搜索。
-    search.py 仅从此配置读取搜索空间。
+    Supports: halving-random (default), random, grid.
+    支持：halving-random（默认）、random、grid。
     """
 
     # -- Strategy / 搜索策略 --
-    strategy: str = "random"  # "evolutionary", "random", "grid"
+    strategy: str = "halving-random"  # "halving-random", "random", "grid"
 
-    # -- Shared / 共享参数 --
-    search_epochs: int = 5  # Epochs per individual evaluation / 每个个体的训练轮数
+    # -- Successive halving / 逐步减半参数 --
+    search_epochs_min: int = 2   # 初始最少训练轮数 / minimum epochs at start
+    search_epochs_max: int = 20  # 最终最多训练轮数 / maximum epochs at end
+    halving_factor: int = 3      # 每轮保留 1/factor / keep top 1/factor per round
 
-    # -- Evolutionary algorithm / 演化算法参数 --
-    population_size: int = 8  # μ: number of parents / 种群大小
-    offspring_per_gen: int = 4  # λ: offspring per generation / 每代后代数
-    num_generations: int = 3  # G: number of generations / 演化代数
-    tournament_size: int = 3  # Tournament selection size / 锦标赛选择大小
-    mutation_rate: float = 0.25  # Per-gene mutation probability / 逐基因变异概率
+    # -- Candidate sampling / 候选采样 --
+    num_trials: int = 50  # 随机采样候选数 / number of random candidates
 
-    # -- Random search / 随机搜索参数 --
-    num_trials: int = 10  # Number of random evaluations / 随机评估次数
+    # -- Cross-validation / 交叉验证 --
+    cv: int = 3  # CV 折数 / number of CV folds
 
-    # -- Grid search / 网格搜索参数 --
-    grid_num_points: int = 5  # Points per continuous dimension / 每个连续维度的采样点数
+    # -- Discrete params / 离散参数 --
+    batch_size_choices: tuple[int, ...] = (128, 256, 512)
 
-    # -- Continuous params (set None to skip) / 连续参数（设 None 跳过）--
-    learning_rate: HyperparamRange | None = HyperparamRange(1e-4, 1.0, "log_uniform")
-    weight_decay: HyperparamRange | None = HyperparamRange(1e-6, 1e-2, "log_uniform")
-    momentum: HyperparamRange | None = HyperparamRange(0.8, 0.99, "uniform")
-
-    # -- Discrete params (set None to skip) / 离散参数（设 None 跳过）--
-    batch_size: tuple[int, ...] | None = (128, 256, 512, 1024)
-    optimizer_type: tuple[str, ...] | None = (
-        "sgd",
-        "adam",
-        "adamw",
-        "rmsprop",
-        "nadam",
-    )
-    scheduler_type: tuple[str, ...] | None = ("cosine", "constant", "step")
+    # -- Scoring / 评分指标 --
+    scoring: str = "accuracy"

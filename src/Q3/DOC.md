@@ -27,7 +27,7 @@ src/Q3/
 ├── augment.py        # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
 ├── train.py          # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
 ├── evaluate.py       # 评估指标
-├── search.py         # 超参数搜索（演化/随机/网格三种策略）
+├── search.py         # 超参数搜索（skorch + sklearn，halving-random/random/grid）
 ├── checkpoint.py     # 检查点管理与特征提取器导出
 ├── visualize.py      # 可视化（训练曲线、混淆矩阵）
 ├── main.py           # 主入口（含 --search / --no-augmentation / --amp 等）
@@ -172,27 +172,26 @@ src/Q3/
 
 **AugmentationConfig** — 数据增强配置（详见第 5 节）：
 
-**SearchConfig** — 超参数搜索配置：
+**SearchConfig** — 超参数搜索配置（skorch + sklearn）：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `strategy` | `"evolutionary"` | 搜索策略：`evolutionary` / `random` / `grid` |
-| `search_epochs` | `5` | 每组超参数的评估轮数 |
-| `population_size` | `8` | 种群大小 (μ)，演化策略专用 |
-| `offspring_per_gen` | `4` | 每代后代数 (λ)，演化策略专用 |
-| `num_generations` | `3` | 演化代数 (G)，演化策略专用 |
-| `tournament_size` | `3` | 锦标赛选择大小，演化策略专用 |
-| `mutation_rate` | `0.25` | 逐基因变异概率，演化策略专用 |
-| `num_trials` | `20` | 随机搜索试验次数 |
-| `grid_num_points` | `5` | 网格搜索每个连续维度采样点数 |
-| `learning_rate` | `HyperparamRange(1e-4, 1.0, "log_uniform")` | 搜索范围（设 None 跳过） |
-| `weight_decay` | `HyperparamRange(1e-6, 1e-2, "log_uniform")` | 搜索范围 |
-| `momentum` | `HyperparamRange(0.8, 0.99, "uniform")` | 搜索范围 |
-| `batch_size` | `(128, 256, 512, 1024)` | 离散候选值 |
-| `optimizer_type` | `("sgd", "adam", "adamw", "rmsprop", "nadam")` | 离散候选值 |
-| `scheduler_type` | `("cosine", "constant", "step")` | 离散候选值 |
+| `strategy` | `"halving-random"` | 搜索策略：`halving-random` / `random` / `grid` |
+| `search_epochs_min` | `2` | successive halving 起始轮数 |
+| `search_epochs_max` | `20` | successive halving 最大轮数 |
+| `halving_factor` | `3` | 每轮保留前 1/factor 的候选 |
+| `num_trials` | `50` | 随机采样候选数 |
+| `cv` | `3` | 交叉验证折数 |
+| `batch_size_choices` | `(128, 256, 512)` | batch_size 候选值 |
+| `scoring` | `"accuracy"` | sklearn 评分指标 |
 
-`frozen=True` 保证训练过程中配置不被意外修改。`SearchConfig` 中的参数范围设为 `None` 可跳过该参数的搜索。
+搜索空间（`scipy.stats` 分布，硬编码在 `search.py`）：
+- `lr`: loguniform(1e-4, 1.0)
+- `optimizer__momentum`: uniform(0.85, 0.14) → [0.85, 0.99]
+- `optimizer__weight_decay`: loguniform(1e-6, 1e-2)
+- `batch_size`: 离散候选列表
+
+`frozen=True` 保证训练过程中配置不被意外修改。搜索固定使用 SGD（ResNet-18 标准优化器）。
 
 ### 3.2 `model.py` — 网络模型
 
@@ -215,6 +214,8 @@ src/Q3/
 - **测试集**：仅 `ToTensor + Normalize`（无增强）
 
 `get_cifar100_loaders(config)` 返回 `(train_loader, test_loader)`，首次运行自动下载 CIFAR-100 到 `data_root`。
+
+超参数搜索的数据准备由 `search.py` 的 `_prepare_search_data()` 处理（转为 numpy 数组，仅 Normalize），不经过此模块。
 
 ### 3.4 `train.py` — 训练循环
 
@@ -484,88 +485,103 @@ for name, param in model.named_parameters():
 
 ## 7. 超参数搜索
 
-支持三种搜索策略，通过 `SearchConfig.strategy` 或 `--search-strategy` 选择：
+使用 **skorch** 将 ResNet-18 包装为 sklearn 兼容估计器，然后用 **sklearn.model_selection** 的搜索工具做超参数搜索。sklearn 的搜索框架自带交叉验证、successive halving、标准评分指标，避免手写 fitness 函数的各种陷阱。
 
-| 策略 | CLI 参数 | 特点 | 默认评估次数 |
+支持三种策略，通过 `SearchConfig.strategy` 或 `--search-strategy` 选择：
+
+| 策略 | CLI 参数 | 特点 | 适用场景 |
 |---|---|---|---|
-| 演化 | `evolutionary` | (μ+λ) 演化策略，适合中维空间 | 20 (8+3×4) |
-| 随机 (默认) | `random` | 均匀随机采样，简单高效基线 | 10 |
-| 网格 | `grid` | 笛卡尔积穷举，最全面但最慢 | 取决于参数空间 |
+| Halving-Random (默认) | `halving-random` | successive halving + 随机采样，最高效 | 大搜索空间，GPU 资源有限 |
+| 随机 | `random` | 均匀随机采样 + 交叉验证 | 简单基线 |
+| 网格 | `grid` | 笛卡尔积穷举 | 小搜索空间 |
 
-### 7.1 演化算法
+### 7.1 设计决策
 
-使用 **(μ + λ) 演化策略**，比网格搜索更高效地探索混合连续/离散参数空间：
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| 框架 | skorch + sklearn | 久经考验的 CV 框架，无手写 fitness bug |
+| 优化器 | 固定 SGD | ResNet-18 标准；避免 Adam 不接受 momentum 等参数不兼容问题 |
+| 增强搜索阶段 | 无增强（仅 Normalize） | 搜索目的是找 optimizer 参数，干净信号更可靠 |
+| 数据格式 | numpy 数组 | skorch/sklearn 原生支持，CV 用索引切分 |
+| 调度器 | 无（搜索阶段） | 搜索轮数短（2-20），scheduler 不适用 |
+| label_smoothing | 无（搜索阶段） | 无 CutMix/Mixup 时意义不大 |
+| CV | 3-fold 交叉验证 | sklearn 自带 train/val split，不碰 test set |
 
-- **种群大小 (μ)**：8 个个体
-- **每代后代 (λ)**：4 个
-- **演化代数 (G)**：3 代
-- **总评估次数**：8 + 3×4 = 20 次
-- **每次评估**：5 epochs 训练探针
-- **预计耗时**：RTX 4060 上约 10-17 分钟
+### 7.2 Successive Halving（HalvingRandomSearchCV）
 
-**演化算子**：
-- **选择**：锦标赛选择（size=3）
-- **交叉**：连续参数用 BLX-α（α=0.3），离散参数均匀选择
-- **变异**：连续参数乘性高斯扰动，离散参数随机重采样
-- **精英保留**：父代 + 后代合并，保留前 μ 个
+默认策略的工作流程：
 
-### 7.2 随机搜索
+1. **第 1 轮**：50 个随机候选 × 2 epochs → 按 accuracy 保留前 1/3（~17 个）
+2. **第 2 轮**：17 个候选 × 6 epochs → 保留前 1/3（~6 个）
+3. **第 3 轮**：6 个候选 × 18 epochs → 最终最优
 
-从搜索空间均匀随机采样 `num_trials` 组超参数并逐一评估。
+总训练量：每轮 × 候选数 × epochs，远小于网格搜索的穷举量。
 
-- **试验次数**：10（可配置 `SearchConfig.num_trials`）
-- **采样方式**：连续参数按 `HyperparamRange.distribution` 采样（uniform / log_uniform），离散参数随机选择
-- **优点**：实现简单、无超参数、对低维空间常与演化方法不相上下
+### 7.3 搜索空间
 
-### 7.3 网格搜索
+| 超参数 | skorch 参数名 | 类型 | 范围 | TrainConfig 映射 |
+|---|---|---|---|---|
+| 学习率 | `lr` | loguniform | [1e-4, 1.0] | `learning_rate` |
+| 动量 | `optimizer__momentum` | uniform | [0.85, 0.99] | `momentum` |
+| 权重衰减 | `optimizer__weight_decay` | loguniform | [1e-6, 1e-2] | `weight_decay` |
+| 批大小 | `batch_size` | 离散 | [128, 256, 512] | `batch_size` |
 
-对搜索空间所有参数取值的笛卡尔积进行穷举评估。
+连续参数使用 `scipy.stats` 分布（loguniform / uniform），离散参数使用候选列表。
 
-- **网格密度**：`SearchConfig.grid_num_points`（默认 5）控制每个连续维度的采样点数
-- **连续参数**：log_uniform 分布在对数空间等距，uniform 分布在线性空间等距
-- **离散参数**：直接使用候选列表
-- **注意**：网格大小随参数数量指数增长，建议缩小搜索空间或降低 `grid_num_points`
+### 7.4 数据准备
 
-### 7.4 搜索空间
+`_prepare_search_data()` 将 CIFAR-100 训练集转为 numpy 数组：
 
-| 超参数 | 类型 | 范围/选项 | 搜索原因 |
-|---|---|---|---|
-| `learning_rate` | 连续, log-uniform | [1e-4, 1.0] | 最重要的参数，1 epoch 即可见效果 |
-| `weight_decay` | 连续, log-uniform | [1e-6, 1e-2] | 正则化强度，5 epoch 内可见 train-test gap |
-| `momentum` | 连续, uniform | [0.8, 0.99] | SGD 梯度加速，影响收敛速度 |
-| `batch_size` | 离散 | [128, 256, 512, 1024] | 影响 per-epoch 更新次数 |
-| `optimizer_type` | 离散 | [sgd, adam, adamw, rmsprop, nadam] | 不同收敛曲线 |
-| `scheduler_type` | 离散 | [cosine, constant, step] | 5 epoch 内 LR 轨迹差异明显 |
+```python
+X, y = _prepare_search_data(config)
+# X: (50000, 3, 32, 32) float32, 已归一化
+# y: (50000,) int64
+```
 
-搜索空间在 `config.py` 的 `SearchConfig` 中定义，可修改范围或设 `None` 跳过某个参数。
+归一化使用与正式训练相同的 CIFAR-100 统计量（mean/std）。不使用任何数据增强。
 
-### 7.5 适应度函数
-
-**fitness = 10 × AIR + LDR**
-
-- **AIR**（准确率提升速率）：test_acc 随 epoch 的线性回归斜率
-- **LDR**（损失下降速率）：test_loss 随 epoch 的线性回归斜率取反
-- 发散惩罚：acc 下降或 loss 上升时 fitness × 0.5
-
-使用测试集指标以偏好泛化性好的配置。
-
-### 7.6 输出文件
+### 7.5 输出文件
 
 搜索结果保存为 `checkpoints/hp_search_results.json`：
 
 ```json
 {
-  "search_config": { "strategy": "evolutionary", "search_epochs": 5, "total_evaluations": 20 },
-  "best": {
-    "params": { "learning_rate": 0.05, "optimizer_type": "sgd", ... },
-    "fitness": 0.87,
-    "test_acc_history": [0.01, 0.05, 0.09, 0.13, 0.18],
-    "test_loss_history": [4.60, 4.12, 3.78, 3.52, 3.35]
+  "search_config": {
+    "strategy": "halving-random",
+    "total_candidates": 50,
+    "cv": 3
   },
-  "generation_summary": [...],
-  "all_evaluated": [...]
+  "best": {
+    "params": {
+      "lr": 0.032,
+      "optimizer__momentum": 0.93,
+      "optimizer__weight_decay": 2.1e-4,
+      "batch_size": 256
+    },
+    "mean_test_score": 0.352
+  },
+  "all_candidates": [
+    { "params": {...}, "mean_test_score": 0.352, "rank": 1 },
+    ...
+  ]
 }
 ```
+
+### 7.6 参数映射与训练集成
+
+`run_search()` 返回已映射为 TrainConfig 字段名的参数字典：
+
+```python
+# skorch 参数名 → TrainConfig 字段名
+PARAM_MAP = {
+    "lr": "learning_rate",
+    "optimizer__momentum": "momentum",
+    "optimizer__weight_decay": "weight_decay",
+    "batch_size": "batch_size",
+}
+```
+
+`main.py` 直接用 `dataclasses.replace(config, **best_params)` 应用搜索结果。
 
 ### 7.7 训练时自动加载
 
@@ -580,7 +596,7 @@ for name, param in model.named_parameters():
 ### 超参数搜索
 
 ```bash
-# 仅运行搜索（推荐：先搜索一次）
+# 仅运行搜索（推荐：先搜索一次，默认 halving-random）
 uv run python src/Q3/main.py --search-only
 
 # 搜索 + 用最优配置训练
@@ -589,7 +605,6 @@ uv run python src/Q3/main.py --search
 # 指定搜索策略
 uv run python src/Q3/main.py --search-only --search-strategy random
 uv run python src/Q3/main.py --search-only --search-strategy grid
-uv run python src/Q3/main.py --search-only --search-strategy evolutionary
 ```
 
 ### 自动使用搜索结果
