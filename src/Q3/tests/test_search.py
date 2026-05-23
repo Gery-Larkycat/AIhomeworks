@@ -197,6 +197,35 @@ class TestResultLogging:
         assert loaded["weight_decay"] == 3e-4
         assert loaded["batch_size"] == 256
 
+    def test_load_filters_invalid_fields(self, tmp_path):
+        """max_epochs (halving resource) 被过滤，不会导致 replace 报错。"""
+        config = dataclasses.replace(
+            TrainConfig(), checkpoint_dir=tmp_path
+        )
+        results = {
+            "search_config": {"strategy": "halving-random"},
+            "best": {
+                "params": {
+                    "lr": 0.05,
+                    "optimizer__momentum": 0.92,
+                    "optimizer__weight_decay": 3e-4,
+                    "batch_size": 256,
+                    "max_epochs": 18,  # HalvingRandomSearchCV 的 resource 参数
+                },
+                "mean_test_score": 0.35,
+            },
+            "all_candidates": [],
+        }
+        path = tmp_path / "hp_search_results.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(results, f)
+
+        loaded = load_best_search_params(config)
+        assert loaded is not None
+        assert "max_epochs" not in loaded
+        # 可以安全传给 dataclasses.replace
+        dataclasses.replace(config, **loaded)
+
 
 # ---------------------------------------------------------------------------
 # Search config tests / 搜索配置测试

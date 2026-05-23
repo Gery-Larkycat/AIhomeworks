@@ -15,6 +15,7 @@ sklearn 久经考验的交叉验证搜索工具：
     网格搜索
 """
 
+import dataclasses
 import json
 from collections import OrderedDict
 from pathlib import Path
@@ -34,6 +35,12 @@ from torchvision import datasets
 
 from .config import SearchConfig, TrainConfig
 from .model import ResNet18
+
+
+# TrainConfig 有效字段集合，用于过滤搜索结果中的无关参数
+# (HalvingRandomSearchCV 的 resource="max_epochs" 会出现在 best_params_ 中，
+#  但那是 successive halving 的资源分配，不是正式训练的 epochs 参数)
+_VALID_TRAIN_FIELDS = {f.name for f in dataclasses.fields(TrainConfig)}
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +260,10 @@ def load_best_search_params(
         return None
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    # 映射 skorch 参数名 → TrainConfig 字段名
+    # 映射 skorch 参数名 → TrainConfig 字段名，过滤不属于 TrainConfig 的参数
     raw_params = data["best"]["params"]
-    return {PARAM_MAP.get(k, k): v for k, v in raw_params.items()}
+    mapped = {PARAM_MAP.get(k, k): v for k, v in raw_params.items()}
+    return {k: v for k, v in mapped.items() if k in _VALID_TRAIN_FIELDS}
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +376,7 @@ def run_search(
         print(f"    {k}: {v}")
     print(f"\n  Results saved to: {results_path}")
 
-    # 返回映射后的参数 / Return mapped params
+    # 返回映射后的参数 / Return mapped params (filtered to TrainConfig fields)
     raw_params = searcher.best_params_
-    return {PARAM_MAP.get(k, k): v for k, v in raw_params.items()}
+    mapped = {PARAM_MAP.get(k, k): v for k, v in raw_params.items()}
+    return {k: v for k, v in mapped.items() if k in _VALID_TRAIN_FIELDS}
