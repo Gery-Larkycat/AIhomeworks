@@ -121,6 +121,21 @@ def parse_args() -> argparse.Namespace:
             " / 禁用数据增强"
         ),
     )
+    # Transfer learning arguments / 迁移学习参数
+    parser.add_argument(
+        "--transfer", action="store_true",
+        help=(
+            "Transfer learn from CIFAR-100 to CIFAR-10"
+            " / 迁移学习 CIFAR-100 → CIFAR-10"
+        ),
+    )
+    parser.add_argument(
+        "--transfer-checkpoint", type=str, default=None,
+        help=(
+            "Override source checkpoint path for transfer"
+            " / 覆盖迁移学习源检查点路径"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -148,9 +163,139 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
     return TrainConfig(**overrides)
 
 
+def _run_transfer(args: argparse.Namespace) -> None:
+    """
+    迁移学习流程：CIFAR-100 预训练 → CIFAR-10 微调。
+    支持 --search / --search-only 进行迁移超参搜索。
+    """
+    import dataclasses
+
+    from src.Q3.config import TransferConfig
+    from src.Q3.data import get_cifar10_loaders
+    from src.Q3.evaluate import (
+        confusion_matrix,
+        evaluate,
+        per_class_accuracy,
+    )
+    from src.Q3.transfer import (
+        load_pretrained_model,
+        freeze_backbone,
+        print_transfer_summary,
+        run_transfer,
+        run_transfer_search,
+        _to_train_config,
+    )
+    from src.Q3.visualize import (
+        plot_confusion_matrix,
+        plot_lr_schedule,
+        plot_training_curves,
+    )
+
+    # 构建 TransferConfig / Build TransferConfig
+    config = TransferConfig()
+    overrides: dict = {}
+    if args.transfer_checkpoint is not None:
+        overrides["source_checkpoint"] = Path(args.transfer_checkpoint)
+    if args.epochs is not None:
+        overrides["epochs"] = args.epochs
+    if args.batch_size is not None:
+        overrides["batch_size"] = args.batch_size
+    if args.lr is not None:
+        overrides["learning_rate"] = args.lr
+    if args.amp:
+        overrides["use_amp"] = True
+    if args.no_augmentation:
+        from src.Q3.config import AugmentationConfig
+        overrides["augmentation"] = dataclasses.replace(
+            AugmentationConfig(), use_augmentation=False,
+        )
+    if args.data_root is not None:
+        overrides["data_root"] = Path(args.data_root)
+    if overrides:
+        config = dataclasses.replace(config, **overrides)
+
+    # 仅搜索模式 / Search-only mode
+    if args.search_only:
+        run_transfer_search(config)
+        return
+
+    # 运行迁移学习（含可选搜索）/ Run transfer (with optional search)
+    history = run_transfer(
+        config, search=args.search,
+    )
+
+    # 最终评估 / Final evaluation
+    train_config = _to_train_config(config)
+    _, test_loader = get_cifar10_loaders(train_config)
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+
+    # 重新加载最佳模型进行评估 / Reload best model for eval
+    model = load_pretrained_model(
+        config.source_checkpoint,
+        source_num_classes=config.source_num_classes,
+        target_num_classes=config.num_classes,
+    )
+    freeze_backbone(model)
+    model = model.to(device)
+
+    # 加载最佳检查点 / Load best checkpoint
+    from src.Q3.checkpoint import load_full_checkpoint
+    best_path = train_config.checkpoint_dir / "resnet18_cifar100_best.pth"
+    if best_path.exists():
+        load_full_checkpoint(best_path, model)
+        print(f"  Loaded best checkpoint: {best_path}")
+
+    test_loss, test_acc = evaluate(model, test_loader, device)
+    print(
+        f"\nTest Loss: {test_loss:.4f}"
+        f" | Test Accuracy: {test_acc:.4f}"
+    )
+
+    # 每类准确率 / Per-class accuracy
+    class_acc = per_class_accuracy(
+        model, test_loader, device, config.num_classes
+    )
+    top5 = sorted(
+        class_acc.items(), key=lambda x: x[1], reverse=True
+    )[:5]
+    bottom5 = sorted(
+        class_acc.items(), key=lambda x: x[1]
+    )[:5]
+    print("Top 5 classes / 最高 5 类:")
+    for cls, acc in top5:
+        print(f"  Class {cls}: {acc:.4f}")
+    print("Bottom 5 classes / 最低 5 类:")
+    for cls, acc in bottom5:
+        print(f"  Class {cls}: {acc:.4f}")
+
+    # 混淆矩阵 / Confusion matrix
+    cm = confusion_matrix(
+        model, test_loader, device, config.num_classes
+    )
+
+    # 可视化 / Visualizations
+    vis_dir = train_config.checkpoint_dir / "plots"
+    plot_training_curves(history, vis_dir)
+    plot_confusion_matrix(cm, vis_dir)
+    plot_lr_schedule(history, vis_dir)
+    print(f"Plots saved to {vis_dir}")
+
+    print("\nTransfer learning done! / 迁移学习完成！")
+
+
 def main() -> None:
     """Main entry / 主入口。"""
     args = parse_args()
+
+    # ---- Transfer learning branch / 迁移学习分支 ----
+    if args.transfer:
+        _run_transfer(args)
+        return
+
+    # ---- CIFAR-100 training branch / CIFAR-100 训练分支 ----
     config = build_config(args)
 
     print("=" * 60)

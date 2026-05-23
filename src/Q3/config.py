@@ -175,3 +175,65 @@ class SearchConfig:
 
     # -- Scoring / 评分指标 --
     scoring: str = "accuracy"
+
+
+# ---------------------------------------------------------------------------
+# CIFAR-10 constants / CIFAR-10 常量
+# ---------------------------------------------------------------------------
+
+CIFAR10_MEAN: tuple[float, ...] = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD: tuple[float, ...] = (0.2470, 0.2435, 0.2616)
+
+
+@dataclass(frozen=True)
+class TransferConfig:
+    """
+    迁移学习配置：CIFAR-100 预训练 → CIFAR-10 微调。
+    Transfer learning config: CIFAR-100 pretrained → CIFAR-10 fine-tune.
+
+    加载预训练权重 → 冻结 backbone → 替换 FC → 仅训练 FC。
+    同时包含训练配置和搜索配置（搜索空间/默认值与 CIFAR-100 不同）。
+
+    设计思路：与 TrainConfig 平行但独立，因为迁移学习的超参数
+    （lr、epochs、batch_size 等）与全量训练差异较大，不宜共用默认值。
+    """
+
+    # -- Source / 源模型 --
+    source_checkpoint: Path = Path("checkpoints/resnet18_cifar100_best.pth")
+    source_num_classes: int = 100  # 源模型类别数 / source model class count
+
+    # -- Target / 目标数据集 --
+    num_classes: int = 10  # CIFAR-10
+    mean: tuple[float, ...] = CIFAR10_MEAN
+    std: tuple[float, ...] = CIFAR10_STD
+
+    # -- Training / 训练超参数 --
+    batch_size: int = 256
+    epochs: int = 30
+    learning_rate: float = 0.01  # FC-only 训练用较低学习率
+    momentum: float = 0.9
+    weight_decay: float = 5e-4
+    label_smoothing: float = 0.1
+    optimizer_type: str = "sgd"
+    scheduler_type: str = "cosine"
+    use_amp: bool = False
+    patience: int = 5
+    min_delta: float = 1e-4
+    scheduler_t_max: int = 30
+
+    # -- Data loading / 数据加载 --
+    num_workers: int = 0
+    pin_memory: bool = True
+    data_root: Path = Path("data")
+    checkpoint_dir: Path = Path("checkpoints")
+
+    # -- Augmentation / 数据增强 --
+    augmentation: AugmentationConfig = AugmentationConfig()
+
+    # -- Transfer search / 迁移超参搜索 --
+    search_epochs_min: int = 2
+    search_epochs_max: int = 10  # FC-only 收敛快，不需要太长
+    halving_factor: int = 3
+    num_trials: int = 30
+    cv: int = 3
+    batch_size_choices: tuple[int, ...] = (64, 128, 256)

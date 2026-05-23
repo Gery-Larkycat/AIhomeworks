@@ -28,7 +28,7 @@ def create_optimizer(
     Supports: sgd, adam, adamw, rmsprop, nadam.
     支持：sgd, adam, adamw, rmsprop, nadam。
     """
-    params = model.parameters()
+    params = [p for p in model.parameters() if p.requires_grad]
     opt = config.optimizer_type.lower()
     if opt == "sgd":
         return SGD(
