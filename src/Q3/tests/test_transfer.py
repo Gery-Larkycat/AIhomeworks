@@ -12,10 +12,12 @@ import dataclasses
 
 import pytest
 import torch
+import torch.nn as nn
 
 from src.Q3.config import TransferConfig, TrainConfig
 from src.Q3.model import ResNet18
 from src.Q3.transfer import (
+    find_best_cifar100_checkpoint,
     freeze_backbone,
     load_pretrained_model,
     print_transfer_summary,
@@ -44,14 +46,34 @@ class TestLoadPretrainedModel:
         return path
 
     def test_fc_output_is_10(self, checkpoint):
-        """替换后 FC 输出维度为 10。"""
+        """新分类层输出维度为 10。"""
         model = load_pretrained_model(checkpoint)
-        assert model.fc.out_features == 10
+        assert model.fc[-1].out_features == 10
 
     def test_fc_input_is_512(self, checkpoint):
-        """FC 输入维度仍为 512。"""
+        """原始 FC 输入维度仍为 512。"""
         model = load_pretrained_model(checkpoint)
-        assert model.fc.in_features == 512
+        assert model.fc[0].in_features == 512
+
+    def test_fc_is_sequential(self, checkpoint):
+        """FC 变为 Sequential（原始 FC + 新分类层）。"""
+        model = load_pretrained_model(checkpoint)
+        assert isinstance(model.fc, nn.Sequential)
+        assert len(model.fc) == 2
+
+    def test_original_fc_preserved(self, checkpoint):
+        """原始 FC 权重与源检查点一致。"""
+        ckpt = torch.load(
+            checkpoint, weights_only=False
+        )
+        source_state = ckpt["model_state_dict"]
+        model = load_pretrained_model(checkpoint)
+        assert torch.equal(
+            model.fc[0].weight, source_state["fc.weight"]
+        )
+        assert torch.equal(
+            model.fc[0].bias, source_state["fc.bias"]
+        )
 
     def test_backbone_weights_preserved(self, checkpoint):
         """非 FC 权重与源检查点一致。"""
@@ -67,23 +89,18 @@ class TestLoadPretrainedModel:
                     param, source_state[name]
                 ), f"Backbone weight mismatch: {name}"
 
-    def test_fc_weights_are_random(self, checkpoint):
-        """FC 权重是随机初始化的（不等于源 100 类 FC）。"""
-        ckpt = torch.load(
-            checkpoint, weights_only=False
-        )
-        source_state = ckpt["model_state_dict"]
+    def test_new_classifier_random(self, checkpoint):
+        """新分类层（fc[1]）权重是随机初始化的。"""
         model = load_pretrained_model(checkpoint)
-
-        # 新 FC 权重不应等于源 FC 权重（维度不同：10 vs 100）
-        assert model.fc.weight.shape != source_state["fc.weight"].shape
+        # fc[1] 是新层 Linear(100, 10)，权重不应全零
+        assert model.fc[1].weight.abs().sum() > 0
 
     def test_custom_target_classes(self, checkpoint):
         """可自定义目标类别数。"""
         model = load_pretrained_model(
             checkpoint, target_num_classes=20,
         )
-        assert model.fc.out_features == 20
+        assert model.fc[-1].out_features == 20
 
 
 # ---------------------------------------------------------------------------
@@ -110,14 +127,26 @@ class TestFreezeBackbone:
             if not name.startswith("fc."):
                 assert not param.requires_grad, f"{name} should be frozen"
 
-    def test_trainable_param_count(self):
-        """可训练参数数 = FC weight + FC bias = 512×10 + 10 = 5130。"""
-        model = ResNet18(num_classes=10)
-        freeze_backbone(model)
+    def test_trainable_param_count_transfer_model(self, tmp_path):
+        """迁移模型冻结后可训练参数 = 原 FC + 新分类层 = 52310。"""
+        # 创建合成检查点
+        model = ResNet18(num_classes=100)
+        path = tmp_path / "test_checkpoint.pth"
+        torch.save({
+            "model_state_dict": model.state_dict(),
+            "epoch": 10,
+            "accuracy": 0.5,
+        }, path)
+        # 加载迁移模型并冻结
+        transfer_model = load_pretrained_model(path)
+        freeze_backbone(transfer_model)
         trainable = sum(
-            p.numel() for p in model.parameters() if p.requires_grad
+            p.numel() for p in transfer_model.parameters()
+            if p.requires_grad
         )
-        assert trainable == 512 * 10 + 10
+        # 原 FC: 512*100 + 100 = 51300
+        # 新分类层: 100*10 + 10 = 1010
+        assert trainable == 512 * 100 + 100 + 100 * 10 + 10
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +253,7 @@ class TestOptimizerFiltering:
                 assert p.requires_grad
 
     def test_optimizer_param_count_frozen(self):
-        """冻结后 optimizer 参数数 = FC 参数数。"""
+        """冻结后 optimizer 参数数 = FC 参数数（普通模型）。"""
         from src.Q3.train import create_optimizer
 
         model = ResNet18(num_classes=10)
@@ -237,7 +266,34 @@ class TestOptimizerFiltering:
             for group in optimizer.param_groups
             for p in group["params"]
         )
+        # 普通 ResNet18(10) 冻结后仅 FC 可训练
         assert total_params == 512 * 10 + 10
+
+    def test_optimizer_param_count_transfer(self, tmp_path):
+        """迁移模型冻结后 optimizer 参数数 = 原 FC + 新分类层。"""
+        from src.Q3.train import create_optimizer
+
+        # 创建合成检查点
+        model = ResNet18(num_classes=100)
+        path = tmp_path / "test_checkpoint.pth"
+        torch.save({
+            "model_state_dict": model.state_dict(),
+            "epoch": 10,
+            "accuracy": 0.5,
+        }, path)
+        transfer_model = load_pretrained_model(path)
+        freeze_backbone(transfer_model)
+        config = TrainConfig()
+        optimizer = create_optimizer(transfer_model, config)
+
+        total_params = sum(
+            p.numel()
+            for group in optimizer.param_groups
+            for p in group["params"]
+        )
+        # 原 FC: 512*100 + 100 = 51300
+        # 新分类层: 100*10 + 10 = 1010
+        assert total_params == 512 * 100 + 100 + 100 * 10 + 10
 
     def test_optimizer_all_params_unfrozen(self):
         """正常训练（未冻结）optimizer 包含全部参数。"""
@@ -264,16 +320,25 @@ class TestOptimizerFiltering:
 class TestPrintSummary:
     """Test print_transfer_summary output."""
 
-    def test_prints_without_error(self, capsys):
-        """打印摘要不报错。"""
-        model = ResNet18(num_classes=10)
-        freeze_backbone(model)
-        print_transfer_summary(model)
+    def test_prints_without_error(self, tmp_path, capsys):
+        """打印迁移模型摘要不报错。"""
+        # 创建合成检查点
+        model = ResNet18(num_classes=100)
+        path = tmp_path / "test_checkpoint.pth"
+        torch.save({
+            "model_state_dict": model.state_dict(),
+            "epoch": 10,
+            "accuracy": 0.5,
+        }, path)
+        transfer_model = load_pretrained_model(path)
+        freeze_backbone(transfer_model)
+        print_transfer_summary(transfer_model)
 
         captured = capsys.readouterr()
         assert "Frozen params:" in captured.out
         assert "Trainable params:" in captured.out
-        assert "5,130" in captured.out  # 512*10 + 10
+        # 原 FC(51300) + 新分类层(1010) = 52310
+        assert "52,310" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -319,3 +384,98 @@ class TestCIFAR10Loaders:
         assert labels.shape == (64,)
         assert labels.min() >= 0
         assert labels.max() <= 9
+
+
+# ---------------------------------------------------------------------------
+# Find best CIFAR-100 checkpoint tests / 自动发现最优基础模型测试
+# ---------------------------------------------------------------------------
+
+
+class TestFindBestCifar100Checkpoint:
+    """Test find_best_cifar100_checkpoint accuracy-based selection."""
+
+    def _make_checkpoint(
+        self, directory, accuracy, filename="resnet18_cifar100_best.pth",
+    ):
+        """创建合成检查点文件，含 accuracy 字段。"""
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / filename
+        torch.save(
+            {"epoch": 1, "accuracy": accuracy, "num_classes": 100},
+            path,
+        )
+        return path
+
+    def test_finds_in_timestamped_dir(self, tmp_path):
+        """在时间戳子目录中找到检查点。"""
+        ckpt = self._make_checkpoint(
+            tmp_path / "2026-05-24_143022", accuracy=0.65,
+        )
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result == ckpt
+
+    def test_selects_highest_accuracy(self, tmp_path):
+        """选准确率最高的（而非最新的）。"""
+        self._make_checkpoint(
+            tmp_path / "2026-05-23_100000", accuracy=0.55,
+        )
+        best = self._make_checkpoint(
+            tmp_path / "2026-05-24_143022", accuracy=0.72,
+        )
+        self._make_checkpoint(
+            tmp_path / "2026-05-25_090000", accuracy=0.60,
+        )
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result == best
+
+    def test_same_accuracy_picks_newest(self, tmp_path):
+        """同准确率时选最新的。"""
+        old = self._make_checkpoint(
+            tmp_path / "2026-05-23_100000", accuracy=0.70,
+        )
+        new = self._make_checkpoint(
+            tmp_path / "2026-05-24_143022", accuracy=0.70,
+        )
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result == new
+        assert result != old
+
+    def test_fallback_to_flat_dir(self, tmp_path):
+        """回退到平面目录（无子目录时）。"""
+        ckpt = self._make_checkpoint(
+            tmp_path, accuracy=0.55,
+        )
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result == ckpt
+
+    def test_returns_none_when_empty(self, tmp_path):
+        """空目录返回 None。"""
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result is None
+
+    def test_returns_none_when_no_root(self, tmp_path):
+        """不存在的根目录返回 None。"""
+        result = find_best_cifar100_checkpoint(
+            tmp_path / "nonexistent",
+        )
+        assert result is None
+
+    def test_skips_dirs_without_checkpoint(self, tmp_path):
+        """跳过不含检查点的目录。"""
+        (tmp_path / "2026-05-24_143022").mkdir()
+        good = self._make_checkpoint(
+            tmp_path / "2026-05-25_090000", accuracy=0.68,
+        )
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result == good
+
+    def test_flat_dir_vs_timestamped_picks_higher(self, tmp_path):
+        """时间戳目录和平面目录比较准确率。"""
+        self._make_checkpoint(
+            tmp_path, accuracy=0.50,
+        )
+        best = self._make_checkpoint(
+            tmp_path / "2026-05-24_143022", accuracy=0.75,
+        )
+        result = find_best_cifar100_checkpoint(tmp_path)
+        assert result == best

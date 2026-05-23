@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 from torch.optim import SGD
 
-from .config import TrainConfig
+from .config import TrainConfig, dataset_prefix
 from .model import ResNet18, get_feature_extractor_state
 
 
@@ -68,23 +68,30 @@ def save_best_checkpoint(
     """
     Save best model checkpoint / 保存最佳模型检查点。
     """
-    return save_full_checkpoint(model, optimizer, epoch, accuracy, config, "resnet18_cifar100_best.pth")
+    prefix = dataset_prefix(config.num_classes)
+    filename = f"{prefix}_best.pth"
+    return save_full_checkpoint(
+        model, optimizer, epoch, accuracy, config, filename,
+    )
 
 
 def save_feature_extractor(
     model: ResNet18,
     config: TrainConfig,
-    filename: str = "resnet18_cifar100_feature_extractor.pth",
+    filename: str | None = None,
 ) -> Path:
     """
     Save feature extractor (all layers except FC) for transfer learning.
     保存特征提取器（除 FC 外的所有层），供迁移学习使用。
 
     Usage in transfer learning / 迁移学习用法:
-        state = torch.load("resnet18_cifar100_feature_extractor.pth")
-        model = ResNet18(num_classes=10)  # CIFAR-10 has 10 classes
-        model.load_state_dict(state, strict=False)  # FC layer is randomly initialized
+        state = torch.load("resnet18_cifar10_feature_extractor.pth")
+        model = ResNet18(num_classes=10)
+        model.load_state_dict(state, strict=False)
     """
+    if filename is None:
+        prefix = dataset_prefix(config.num_classes)
+        filename = f"{prefix}_feature_extractor.pth"
     _ensure_dir(config.checkpoint_dir)
     path = config.checkpoint_dir / filename
     feature_state = get_feature_extractor_state(model)

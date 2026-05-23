@@ -139,12 +139,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_config(args: argparse.Namespace) -> TrainConfig:
+def build_config(
+    args: argparse.Namespace, checkpoint_dir: Path,
+) -> TrainConfig:
     """
-    Build config from defaults + CLI overrides.
-    从默认值和命令行覆盖构建配置。
+    Build config from defaults + CLI overrides + timestamped dir.
+    从默认值、命令行覆盖和时间戳目录构建配置。
     """
-    overrides: dict = {}
+    overrides: dict = {"checkpoint_dir": checkpoint_dir}
     if args.epochs is not None:
         overrides["epochs"] = args.epochs
     if args.batch_size is not None:
@@ -167,10 +169,16 @@ def _run_transfer(args: argparse.Namespace) -> None:
     """
     迁移学习流程：CIFAR-100 预训练 → CIFAR-10 微调。
     支持 --search / --search-only 进行迁移超参搜索。
+    自动发现准确率最高的 CIFAR-100 基础模型。
     """
     import dataclasses
 
-    from src.Q3.config import TransferConfig
+    from src.Q3.config import (
+        TransferConfig,
+        generate_timestamp,
+        make_run_dir,
+        dataset_prefix,
+    )
     from src.Q3.data import get_cifar10_loaders
     from src.Q3.evaluate import (
         confusion_matrix,
@@ -178,6 +186,7 @@ def _run_transfer(args: argparse.Namespace) -> None:
         per_class_accuracy,
     )
     from src.Q3.transfer import (
+        find_best_cifar100_checkpoint,
         load_pretrained_model,
         freeze_backbone,
         print_transfer_summary,
@@ -191,11 +200,40 @@ def _run_transfer(args: argparse.Namespace) -> None:
         plot_training_curves,
     )
 
+    # 生成时间戳运行目录 / Generate timestamped run dir
+    timestamp = generate_timestamp()
+    run_dir = make_run_dir(timestamp=timestamp)
+    print(f"Run directory: {run_dir}")
+
     # 构建 TransferConfig / Build TransferConfig
     config = TransferConfig()
     overrides: dict = {}
+    overrides["checkpoint_dir"] = run_dir
+
+    # 自动发现或手动指定源检查点
+    # Auto-discover or manually specify source checkpoint
     if args.transfer_checkpoint is not None:
-        overrides["source_checkpoint"] = Path(args.transfer_checkpoint)
+        overrides["source_checkpoint"] = Path(
+            args.transfer_checkpoint
+        )
+    else:
+        auto_ckpt = find_best_cifar100_checkpoint()
+        if auto_ckpt is None:
+            print(
+                "ERROR: No CIFAR-100 checkpoint found.\n"
+                "先运行 CIFAR-100 训练，"
+                "或指定 --transfer-checkpoint <path>。"
+            )
+            sys.exit(1)
+        overrides["source_checkpoint"] = auto_ckpt
+        ckpt_info = torch.load(
+            auto_ckpt, weights_only=False
+        )
+        print(
+            f"Auto-selected source: {auto_ckpt}"
+            f" (accuracy: {ckpt_info.get('accuracy', 'N/A'):.4f})"
+        )
+
     if args.epochs is not None:
         overrides["epochs"] = args.epochs
     if args.batch_size is not None:
@@ -243,7 +281,8 @@ def _run_transfer(args: argparse.Namespace) -> None:
 
     # 加载最佳检查点 / Load best checkpoint
     from src.Q3.checkpoint import load_full_checkpoint
-    best_path = train_config.checkpoint_dir / "resnet18_cifar100_best.pth"
+    prefix = dataset_prefix(config.num_classes)
+    best_path = train_config.checkpoint_dir / f"{prefix}_best.pth"
     if best_path.exists():
         load_full_checkpoint(best_path, model)
         print(f"  Loaded best checkpoint: {best_path}")
@@ -296,12 +335,18 @@ def main() -> None:
         return
 
     # ---- CIFAR-100 training branch / CIFAR-100 训练分支 ----
-    config = build_config(args)
+    # 生成时间戳运行目录 / Generate timestamped run dir
+    from src.Q3.config import generate_timestamp, make_run_dir
+    timestamp = generate_timestamp()
+    run_dir = make_run_dir(timestamp=timestamp)
+
+    config = build_config(args, checkpoint_dir=run_dir)
 
     print("=" * 60)
     print("ResNet-18 CIFAR-100 Training")
     print("ResNet-18 CIFAR-100 训练")
     print("=" * 60)
+    print(f"Run directory: {run_dir}")
     print(f"Config: {config}")
     device_name = (
         "CUDA" if torch.cuda.is_available() else "CPU"

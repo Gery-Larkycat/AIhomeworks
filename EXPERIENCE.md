@@ -23,3 +23,18 @@
 
 - **batch_size=1024 对小数据集有效**：CIFAR-100 训练集 50k 样本，batch=1024 时每 epoch 仅 ~49 步更新。配合 lr=0.1 + cosine annealing + label smoothing=0.1，收敛稳定。但搜索空间中应包含较小 batch（128/256）作为候选。
 - **CutMix/Mixup 激活时禁用 label_smoothing**：soft labels 已提供类似正则化效果，同时用 label_smoothing 是双重正则化，`train.py` 中已自动处理。
+
+## Transfer Learning / 迁移学习
+
+- **sklearn CV 会 clone 估计器**：sklearn 交叉验证每次 fold 都会 clone 估计器，skorch 随之重新创建模块。迁移学习中必须确保每次重建后都加载预训练权重并冻结 backbone。方案：子类化 `NeuralNetClassifier`，覆写 `initialize_module()` 在模块创建后自动注入预训练权重。
+- **`module__` 前缀传递参数**：skorch 通过 `module__param` 前缀将参数传递给底层模块。`source_checkpoint` 通过 `module__source_checkpoint` 传入，避免在 `__init__` 中作为构造参数（防止 sklearn clone 序列化问题）。
+- **保留原 FC + 追加新分类层优于替换 FC**：不替换原始 FC（512→100），而是保留它作为特征投影层并在其后追加新分类层（100→10）。原 FC 从 CIFAR-100 训练中学到的 100 维语义空间对新任务有用，微调比从零训练更好。可训练参数 = 52,310（原 FC 51,300 + 新分类层 1,010），而非之前方案的 5,130。
+- **冻结参数必须过滤优化器**：`create_optimizer` 改为 `[p for p in model.parameters() if p.requires_grad]`，否则优化器仍会为冻结参数分配动量/梯度状态，浪费内存且 `step()` 计算无意义。
+- **TransferConfig 与 TrainConfig 分开**：迁移学习的超参数默认值与全量训练差异大（lr 0.01 vs 0.1，epochs 30 vs 100，batch 256 vs 1024），不应共用默认值。用 `_to_train_config()` 桥接两者（取同名字段）。
+
+## Run Isolation / 运行隔离
+
+- **时间戳目录避免覆盖**：检查点文件名硬编码（如 `resnet18_cifar100_best.pth`）导致新训练覆盖旧结果。用 `YYYY-MM-DD_HHMMSS` 格式子目录隔离每次运行，格式不含冒号（Windows 目录名安全）。
+- **frozen dataclass 的时间戳注入**：`TrainConfig` / `TransferConfig` 是 frozen dataclass，不能在构造后修改 `checkpoint_dir`。必须在 `main.py` 构造前生成时间戳，通过 `dataclasses.replace()` 注入。
+- **自动选基础模型按准确率而非最新**：迁移学习选源模型时，应比较各运行的 `accuracy` 字段（存在检查点中），而非简单选最新的。同准确率时才按时间戳取最新。
+- **数据集感知文件名**：同一时间戳目录内，CIFAR-100 和 CIFAR-10 的检查点通过 `dataset_prefix(num_classes)` 生成不同前缀（`resnet18_cifar100_*` vs `resnet18_cifar10_*`），避免混淆。

@@ -24,7 +24,7 @@ from sklearn.experimental import enable_halving_search_cv  # noqa: F401
 from sklearn.model_selection import HalvingRandomSearchCV
 from torchvision import datasets
 
-from .checkpoint import save_best_checkpoint, save_training_history
+from .checkpoint import save_training_history
 from .config import TrainConfig, TransferConfig
 from .data import get_cifar10_loaders
 from .model import ResNet18
@@ -42,27 +42,38 @@ def load_pretrained_model(
     target_num_classes: int = 10,
 ) -> ResNet18:
     """
-    加载 CIFAR-100 完整检查点，替换 FC 层为目标类别数。
+    加载 CIFAR-100 完整检查点，保留原 FC 并追加新分类层。
 
     流程：
     1. 创建 ResNet18(source_num_classes) 并加载完整预训练权重
-    2. 替换 FC 为 Linear(512, target_num_classes)（随机初始化）
+    2. 保留原始 FC（512→source_num_classes）用于微调
+    3. 在原始 FC 后追加新分类层（source_num_classes→target_num_classes）
 
-    非 FC 层保留预训练权重（特征提取能力），FC 层从头学习。
+    非 FC 层保留预训练权重（特征提取能力），
+    原始 FC 从预训练权重继续微调，新分类层随机初始化。
+
+    模型 forward 路径变为：
+    backbone → 原始 FC (512→100) → 新分类层 (100→10)
 
     Args:
         source_checkpoint: CIFAR-100 检查点路径（含 model_state_dict）
         source_num_classes: 源模型 FC 输出维度（CIFAR-100 = 100）
-        target_num_classes: 目标 FC 输出维度（CIFAR-10 = 10）
+        target_num_classes: 目标分类层输出维度（CIFAR-10 = 10）
 
     Returns:
-        模型（backbone 已加载预训练权重，FC 随机初始化）
+        模型（backbone 已加载预训练权重，原 FC 保留，新分类层随机初始化）
     """
     model = ResNet18(num_classes=source_num_classes)
     checkpoint = torch.load(source_checkpoint, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
-    # 替换 FC 层：新层随机初始化，维度匹配目标数据集
-    model.fc = nn.Linear(512, target_num_classes)
+    # 保留原始 FC，在其后追加新分类层
+    # 原始 FC (512→100) 从预训练权重微调
+    # 新分类层 (100→10) 随机初始化
+    original_fc = model.fc
+    model.fc = nn.Sequential(
+        original_fc,
+        nn.Linear(source_num_classes, target_num_classes),
+    )
     return model
 
 
@@ -90,6 +101,61 @@ def print_transfer_summary(model: ResNet18) -> None:
     print(f"  Trainable layers: {trainable_names}")
 
 
+def find_best_cifar100_checkpoint(
+    checkpoints_root: Path = Path("checkpoints"),
+    best_filename: str = "resnet18_cifar100_best.pth",
+) -> Path | None:
+    """
+    从 checkpoints_root 下找到 CIFAR-100 准确率最高的最佳检查点。
+
+    扫描所有子目录，读取每个检查点的 accuracy 字段进行比较，
+    返回准确率最高的检查点路径。同准确率时取最新的（按目录名排序）。
+
+    回退兼容：直接检查 checkpoints_root/best_filename（旧平面结构）。
+
+    Args:
+        checkpoints_root: 检查点根目录，默认 checkpoints
+        best_filename: 检查点文件名，默认 resnet18_cifar100_best.pth
+
+    Returns:
+        准确率最高的检查点路径，不存在则 None
+    """
+    if not checkpoints_root.exists():
+        return None
+
+    candidates: list[tuple[float, Path]] = []
+
+    # 按名称倒序扫描（ISO 格式时间戳 = 字典序 = 时间序）
+    # 同准确率时取最新的
+    subdirs = sorted(
+        (d for d in checkpoints_root.iterdir() if d.is_dir()),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    for subdir in subdirs:
+        ckpt_path = subdir / best_filename
+        if not ckpt_path.exists():
+            continue
+        # 仅读取 accuracy 元数据，不加载完整权重到 GPU
+        ckpt = torch.load(ckpt_path, weights_only=False)
+        acc = float(ckpt.get("accuracy", 0.0))
+        candidates.append((acc, ckpt_path))
+
+    # 回退：平面目录兼容旧结构
+    flat = checkpoints_root / best_filename
+    if flat.exists():
+        ckpt = torch.load(flat, weights_only=False)
+        acc = float(ckpt.get("accuracy", 0.0))
+        candidates.append((acc, flat))
+
+    if not candidates:
+        return None
+
+    # 按准确率降序，取最优
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
 # ---------------------------------------------------------------------------
 # skorch TransferNetClassifier / skorch 迁移学习包装器
 # ---------------------------------------------------------------------------
@@ -110,7 +176,7 @@ class _TransferNetClassifier(NeuralNetClassifier):
 
     def initialize_module(self):
         """
-        创建模块 → 加载预训练非 FC 权重 → 冻结 backbone。
+        创建模块 → 加载完整预训练权重 → 保留原 FC + 追加新分类层 → 冻结 backbone。
         每次 fit() 都会重新调用，确保 CV 每折从相同预训练状态开始。
         """
         super().initialize_module()
@@ -118,13 +184,20 @@ class _TransferNetClassifier(NeuralNetClassifier):
         source_ckpt = self.module__source_checkpoint
         if source_ckpt is not None and Path(source_ckpt).exists():
             checkpoint = torch.load(source_ckpt, weights_only=False)
-            pretrained = {
-                k: v
-                for k, v in checkpoint["model_state_dict"].items()
-                if not k.startswith("fc.")
-            }
-            self.module_.load_state_dict(pretrained, strict=False)
-        # 冻结 backbone，仅 FC 可训练
+            # 加载完整权重（含 FC），非 strict 因为 module 创建时
+            # 可能已有不同维度
+            self.module_.load_state_dict(
+                checkpoint["model_state_dict"], strict=True,
+            )
+            # 保留原始 FC，追加新分类层
+            original_fc = self.module_.fc
+            target = self.module__target_num_classes
+            self.module_.fc = nn.Sequential(
+                original_fc,
+                nn.Linear(original_fc.out_features, target),
+            )
+        # 冻结 backbone，仅 FC 层可训练
+        # fc.0 = 原始 FC（微调），fc.1 = 新分类层
         for name, param in self.module_.named_parameters():
             if not name.startswith("fc."):
                 param.requires_grad = False
@@ -206,7 +279,9 @@ def _save_transfer_search_results(
         }
         all_candidates.append({
             "params": params,
-            "mean_test_score": round(float(cv_results["mean_test_score"][i]), 6),
+            "mean_test_score": round(
+                float(cv_results["mean_test_score"][i]), 6
+            ),
             "std_test_score": round(float(cv_results["std_test_score"][i]), 6),
             "mean_fit_time": round(float(cv_results["mean_fit_time"][i]), 2),
             "rank": int(cv_results["rank_test_score"][i]),
@@ -289,8 +364,9 @@ def run_transfer_search(
 
     net = _TransferNetClassifier(
         ResNet18,
-        module__num_classes=config.num_classes,
+        module__num_classes=config.source_num_classes,
         module__source_checkpoint=str(config.source_checkpoint),
+        module__target_num_classes=config.num_classes,
         criterion=nn.CrossEntropyLoss,
         optimizer=torch.optim.SGD,
         lr=config.learning_rate,
@@ -438,7 +514,7 @@ def run_transfer(
     save_training_history(history, train_config)
 
     print(
-        f"\nTransfer training complete."
-        f" / 迁移训练完成。"
+        "\nTransfer training complete."
+        " / 迁移训练完成。"
     )
     return history

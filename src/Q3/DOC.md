@@ -15,30 +15,33 @@
 
 ## 1. 项目概览
 
-本实现从零构建 ResNet-18 网络，在 CIFAR-100（100 类，32×32 彩色图像）上进行训练和评估，并导出特征提取器权重供后续迁移到 CIFAR-10 使用。
+本实现从零构建 ResNet-18 网络，在 CIFAR-100（100 类，32×32 彩色图像）上进行训练和评估，并支持通过迁移学习微调到 CIFAR-10（加载完整模型 → 冻结 backbone → 仅训练 FC 层）。每次训练运行自动隔离到时间戳目录，迁移学习自动选择准确率最高的基础模型。
 
 **文件结构**：
 
 ```
 src/Q3/
-├── config.py         # 训练配置 + 搜索配置 + 数据增强配置（AugmentationConfig）
+├── config.py         # 训练配置 + 搜索配置 + 迁移配置 + 辅助函数
 ├── model.py          # 从零实现的 ResNet-18
-├── data.py           # CIFAR-100 数据加载（委托 augment.py 构建变换管线）
+├── data.py           # CIFAR-100/10 数据加载（委托 augment.py 构建变换管线）
 ├── augment.py        # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
 ├── train.py          # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
 ├── evaluate.py       # 评估指标
-├── search.py         # 超参数搜索（skorch + sklearn，halving-random/random/grid）
+├── search.py         # CIFAR-100 超参数搜索（skorch + sklearn）
+├── transfer.py       # 迁移学习：模型加载、冻结、CIFAR-10 搜索 + 训练
 ├── checkpoint.py     # 检查点管理与特征提取器导出
 ├── visualize.py      # 可视化（训练曲线、混淆矩阵）
-├── main.py           # 主入口（含 --search / --no-augmentation / --amp 等）
+├── main.py           # 主入口（含 --transfer / --search / --amp 等）
 ├── scripts/          # 探索性分析脚本
 │   └── analyze_class_distribution.py  # 类别分布分析
 └── tests/
-    ├── test_model.py   # 模型验证
-    ├── test_data.py    # 数据验证
-    ├── test_augment.py # 增强验证（32 项测试）
-    ├── test_search.py  # 搜索验证
-    └── test_perf.py    # GPU 性能基准测试
+    ├── test_model.py      # 模型验证
+    ├── test_data.py       # 数据验证
+    ├── test_augment.py    # 增强验证（32 项测试）
+    ├── test_search.py     # 搜索验证
+    ├── test_transfer.py   # 迁移学习验证（31 项测试）
+    ├── test_run_dirs.py   # 运行隔离验证（15 项测试）
+    └── test_perf.py       # GPU 性能基准测试
 ```
 
 **设计原则**：每个文件单一职责（SRP），模块间通过 `TrainConfig` dataclass 和函数参数传递依赖，避免全局状态。
@@ -144,16 +147,16 @@ src/Q3/
 
 ## 3. 模块详解
 
-### 3.1 `config.py` — 训练配置、搜索配置与增强配置
+### 3.1 `config.py` — 训练配置、搜索配置、迁移配置与辅助函数
 
 使用 `@dataclass(frozen=True)` 定义不可变配置对象，所有超参数集中管理：
 
-**TrainConfig** — 训练配置：
+**TrainConfig** — CIFAR-100 训练配置：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `data_root` | `"data"` | CIFAR-100 数据存放路径 |
-| `checkpoint_dir` | `"checkpoints"` | 检查点保存路径 |
+| `checkpoint_dir` | `"checkpoints"` | 检查点保存路径（运行时覆盖为时间戳子目录） |
 | `num_classes` | `100` | 分类数（CIFAR-100=100） |
 | `batch_size` | `1024` | 批大小 |
 | `epochs` | `100` | 训练轮数 |
@@ -163,12 +166,33 @@ src/Q3/
 | `label_smoothing` | `0.1` | 标签平滑系数 |
 | `optimizer_type` | `"sgd"` | 优化器类型（sgd/adam/adamw/rmsprop/nadam） |
 | `scheduler_type` | `"cosine"` | 调度器类型（cosine/constant/step） |
-| `patience` | `10` | 早停等待轮数 |
+| `patience` | `6` | 早停等待轮数 |
 | `min_delta` | `1e-4` | 视为改善的最小准确率增量 |
 | `scheduler_t_max` | `100` | 余弦退火周期（= epochs） |
 | `mean` | `(0.5071, 0.4867, 0.4408)` | CIFAR-100 均值 |
 | `std` | `(0.2675, 0.2565, 0.2761)` | CIFAR-100 标准差 |
 | `augmentation` | `AugmentationConfig()` | 数据增强配置（独立管理） |
+
+**TransferConfig** — CIFAR-100 → CIFAR-10 迁移学习配置：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `source_checkpoint` | `checkpoints/resnet18_cifar100_best.pth` | 源模型路径（运行时自动发现覆盖） |
+| `source_num_classes` | `100` | 源模型类别数 |
+| `num_classes` | `10` | 目标类别数（CIFAR-10） |
+| `mean` / `std` | CIFAR-10 统计量 | `(0.4914, 0.4822, 0.4465)` / `(0.2470, 0.2435, 0.2616)` |
+| `batch_size` | `256` | FC-only 微调用较小 batch |
+| `epochs` | `30` | 迁移训练轮数 |
+| `learning_rate` | `0.01` | FC-only 用较低学习率 |
+| `checkpoint_dir` | `"checkpoints"` | 运行时覆盖为时间戳子目录 |
+
+**辅助函数**：
+
+| 函数 | 用途 |
+|---|---|
+| `generate_timestamp()` | 生成 `YYYY-MM-DD_HHMMSS` 时间戳（Windows 安全无冒号） |
+| `make_run_dir(base, timestamp)` | 构造 `checkpoints/<timestamp>` 运行目录 |
+| `dataset_prefix(num_classes)` | 返回检查点文件名前缀（100→`resnet18_cifar100`，10→`resnet18_cifar10`） |
 
 **AugmentationConfig** — 数据增强配置（详见第 5 节）：
 
@@ -213,14 +237,16 @@ src/Q3/
 - **训练集**：委托 `augment.py` 的 `build_train_transforms()` 构建（19 种增强 + 归一化）
 - **测试集**：仅 `ToTensor + Normalize`（无增强）
 
-`get_cifar100_loaders(config)` 返回 `(train_loader, test_loader)`，首次运行自动下载 CIFAR-100 到 `data_root`。
+**`get_cifar100_loaders(config)`**：返回 CIFAR-100 的 `(train_loader, test_loader)`，首次运行自动下载。
 
-超参数搜索的数据准备由 `search.py` 的 `_prepare_search_data()` 处理（转为 numpy 数组，仅 Normalize），不经过此模块。
+**`get_cifar10_loaders(config)`**：返回 CIFAR-10 的 `(train_loader, test_loader)`。与 `get_cifar100_loaders` 结构一致，区别是使用 `datasets.CIFAR10` 和 config 中的 CIFAR-10 归一化统计量。函数签名接受 `TransferConfig | TrainConfig`（鸭子类型）。
+
+超参数搜索的数据准备由 `search.py` / `transfer.py` 的 `_prepare_search_data()` / `_prepare_cifar10_data()` 处理（转为 numpy 数组，仅 Normalize），不经过此模块。
 
 ### 3.4 `train.py` — 训练循环
 
 **工厂函数**：
-- `create_optimizer(model, config)`：根据 `config.optimizer_type` 创建优化器（SGD/Adam/AdamW/RMSprop/NAdam）
+- `create_optimizer(model, config)`：根据 `config.optimizer_type` 创建优化器（SGD/Adam/AdamW/RMSprop/NAdam）。**仅传入 `requires_grad=True` 的参数**，迁移学习冻结 backbone 后优化器只包含 FC 层参数
 - `create_scheduler(optimizer, config)`：根据 `config.scheduler_type` 创建调度器（CosineAnnealingLR/StepLR/constant=None）
 - `create_criterion(config)`：创建 `CrossEntropyLoss(label_smoothing=...)`
 
@@ -250,13 +276,17 @@ src/Q3/
 
 ### 3.6 `checkpoint.py` — 检查点管理
 
-保存三种产物：
+保存三种产物，文件名通过 `dataset_prefix(num_classes)` 动态生成：
 
 | 文件 | 内容 | 用途 |
 |---|---|---|
-| `resnet18_cifar100_best.pth` | epoch, model_state_dict, optimizer_state_dict, accuracy, num_classes | 恢复训练、完整推理 |
-| `resnet18_cifar100_feature_extractor.pth` | 去掉 `fc.` 的 state_dict | **迁移学习** |
+| `<prefix>_best.pth` | epoch, model_state_dict, optimizer_state_dict, accuracy, num_classes | 恢复训练、完整推理 |
+| `<prefix>_feature_extractor.pth` | 去掉 `fc.` 的 state_dict | 迁移学习（旧方案保留） |
 | `training_history.json` | 每 epoch 的 loss/acc/lr 列表 | 训练分析 |
+
+其中 `<prefix>` 由 `dataset_prefix()` 返回：100 类 → `resnet18_cifar100`，10 类 → `resnet18_cifar10`。
+
+**运行隔离**：每次训练的产物存入独立的时间戳子目录 `checkpoints/YYYY-MM-DD_HHMMSS/`，不同运行互不覆盖。`checkpoint_dir` 在 `main.py` 构建配置时注入。
 
 特征提取器的提取逻辑：遍历 model 的 `state_dict()`，过滤掉所有以 `"fc."` 开头的 key。这样得到的权重只包含 stem + 4 组残差层的参数（特征提取部分），不包含分类头。
 
@@ -270,10 +300,12 @@ src/Q3/
 
 ### 3.8 `main.py` — 主入口
 
-编排完整流程：
+编排完整流程，包含两个独立分支：
+
+**CIFAR-100 训练分支**（默认）：
 
 ```
-解析命令行参数 → 构建配置 → 创建模型 → 加载数据
+解析命令行参数 → 生成时间戳运行目录 → 构建配置 → 创建模型 → 加载数据
 → [可选] 超参数搜索（--search / --search-only）
 → [可选] 自动加载已有搜索结果
 → 训练 → 保存训练历史
@@ -281,9 +313,21 @@ src/Q3/
 → 生成可视化 → 验证迁移学习就绪
 ```
 
-支持命令行覆盖配置：`--epochs`, `--batch-size`, `--lr`, `--data-root`, `--eval-only`。
+**迁移学习分支**（`--transfer`）：
+
+```
+解析命令行参数 → 生成时间戳运行目录
+→ 自动发现最优 CIFAR-100 基础模型（或用 --transfer-checkpoint 指定）
+→ [可选] 迁移超参搜索
+→ 加载预训练模型 → 冻结 backbone → 替换 FC → 仅训练 FC
+→ 最终评估 → 生成可视化
+```
+
+支持命令行覆盖配置：`--epochs`, `--batch-size`, `--lr`, `--data-root`, `--eval-only`, `--amp`, `--no-augmentation`。
 
 搜索相关参数：`--search`（搜索+训练）、`--search-only`（仅搜索）、`--ignore-search`（忽略已有结果）。
+
+迁移相关参数：`--transfer`（启用迁移学习）、`--transfer-checkpoint`（指定源检查点路径，不指定则自动发现准确率最高的 CIFAR-100 模型）。
 
 ---
 
@@ -412,7 +456,7 @@ augment.py
 | **学习率调度** | 可配置（默认 CosineAnnealingLR） | 通过 `create_scheduler()` 工厂函数支持 cosine/step/constant |
 | **损失函数** | CrossEntropyLoss (label_smoothing=0.1) | 100 类分类中，标签平滑防止模型过度自信，提升泛化能力 |
 | **正则化** | weight_decay=5e-4 + BN | L2 正则化配合 BatchNorm 是 ResNet 的标准配置 |
-| **早停** | patience=20, min_delta=1e-4 | 防止过拟合，避免无效训练 |
+| **早停** | patience=6, min_delta=1e-4 | 防止过拟合，避免无效训练 |
 
 ### 5.2 学习率变化
 
@@ -435,51 +479,79 @@ lr(t) = 0.5 * 0.1 * (1 + cos(π * t / 200))
 
 ---
 
-## 6. 迁移学习准备
+## 6. 迁移学习：CIFAR-100 → CIFAR-10
 
-### 6.1 导出内容
+### 6.1 方案概述
 
-训练过程中，每当测试准确率创新高时，自动保存特征提取器权重：
+加载 CIFAR-100 训练的完整模型 → 冻结 backbone（stem + layer1-4） → 保留原始 FC（512→100）用于微调 → 在其后追加新分类层（100→10）。支持迁移阶段的超参搜索。
+
+不使用 `get_feature_extractor_state()` 导出方案，也不替换 FC 层，而是保留原 FC 做微调并追加新分类头。
+
+核心实现在 `transfer.py`，CLI 通过 `--transfer` 触发。
+
+### 6.2 模型准备
+
+**`load_pretrained_model(source_checkpoint, source_num_classes=100, target_num_classes=10)`**：
+
+1. 创建 `ResNet18(num_classes=100)` 并加载完整 CIFAR-100 检查点（含 FC 权重）
+2. 保留原始 FC（`Linear(512, 100)`），在其后追加新分类层（`Linear(100, 10)`）
+3. `model.fc` 变为 `nn.Sequential(原 FC, 新分类层)`
+
+forward 路径：`backbone → 原 FC (512→100, 微调) → 新分类层 (100→10, 训练)`
+
+非 FC 层保留预训练权重并冻结，原 FC 从预训练权重继续微调，新分类层随机初始化。
+
+**`freeze_backbone(model)`**：
 
 ```python
-# checkpoint.py 中 save_feature_extractor 的核心逻辑
-feature_state = OrderedDict(
-    (k, v) for k, v in model.state_dict().items()
-    if not k.startswith("fc.")  # 过滤掉分类头
-)
-torch.save(feature_state, path)
-```
-
-导出的 `.pth` 文件包含 stem + layer1-4 的所有参数（约 11.17M - 51.3K ≈ 11.12M），不包含 FC 层。
-
-### 6.2 CIFAR-10 迁移用法
-
-```python
-from src.Q3.model import create_model
-
-# 1. 创建 10 类的模型（FC 层随机初始化）
-model = create_model(num_classes=10)
-
-# 2. 加载 CIFAR-100 训练的特征提取器权重
-state = torch.load("checkpoints/resnet18_cifar100_feature_extractor.pth")
-model.load_state_dict(state, strict=False)  # strict=False 允许 FC 缺失
-
-# 3. 冻结特征提取器，只训练 FC 头（或全部微调）
 for name, param in model.named_parameters():
-    if "fc" not in name:
-        param.requires_grad = False  # 冻结
-
-# 4. 在 CIFAR-10 上训练
-# ... 使用类似的训练循环
+    if not name.startswith("fc."):
+        param.requires_grad = False
 ```
 
-### 6.3 迁移策略选择
+冻结后 FC 层（`fc.0` 原始 FC + `fc.1` 新分类层）均可训练，共 52,310 参数（51,300 + 1,010）。`create_optimizer()` 自动过滤冻结参数。
 
-| 策略 | 做法 | 适用场景 |
-|---|---|---|
-| **冻结 + 只训练 FC** | 冻结 stem+layer1-4，只更新 fc 层 | CIFAR-10 数据较少、快速迁移 |
-| **全量微调** | 加载权重后全部参数都可训练 | CIFAR-10 数据充足、追求最佳性能 |
-| **部分解冻** | 冻结 stem+layer1-2，只训练 layer3-4+fc | 折中方案，平衡速度和性能 |
+### 6.3 自动选最优基础模型
+
+`find_best_cifar100_checkpoint()` 自动从 `checkpoints/` 下所有时间戳运行目录中扫描，读取每个检查点的 `accuracy` 字段，选择 CIFAR-100 准确率最高的模型作为迁移基础。同准确率时取最新的运行。
+
+- `--transfer` 不指定 `--transfer-checkpoint` 时自动调用
+- 回退兼容旧的平面 `checkpoints/` 目录结构
+- 找不到任何检查点时打印提示并退出
+
+### 6.4 配置转换
+
+`TransferConfig` 与 `TrainConfig` 平行但独立（迁移学习超参数默认值不同），通过 `_to_train_config()` 桥接：
+
+```python
+# TransferConfig 字段 → TrainConfig 同名字段映射
+train_fields = {f.name for f in dataclasses.fields(TrainConfig)}
+overrides = {f: getattr(config, f) for f in train_fields if hasattr(config, f)}
+return TrainConfig(**overrides)
+```
+
+### 6.5 迁移超参搜索
+
+使用 `_TransferNetClassifier(NeuralNetClassifier)` 包装 ResNet-18：
+
+- 覆写 `initialize_module()`：每次 CV fold 重建模块后自动加载预训练权重并冻结 backbone
+- 委托 `HalvingRandomSearchCV` 搜索 FC-only 微调超参数
+- 搜索空间：`lr=loguniform(1e-4, 0.1)`，比全量训练范围更小
+
+### 6.6 完整流程
+
+```
+--transfer → 生成时间戳目录
+  → [可选] --search: 迁移超参搜索
+  → load_pretrained_model() → freeze_backbone()
+  → get_cifar10_loaders() → train() (仅 FC)
+  → 保存检查点 + 训练历史
+  → 最终评估 + 可视化
+```
+
+### 6.7 特征提取器导出（保留）
+
+训练过程中仍自动保存特征提取器权重（供其他迁移方案使用），但本项目的迁移学习流程使用完整模型加载方案。
 
 ---
 
@@ -542,7 +614,7 @@ X, y = _prepare_search_data(config)
 
 ### 7.5 输出文件
 
-搜索结果保存为 `checkpoints/hp_search_results.json`：
+CIFAR-100 搜索结果保存为 `checkpoints/<timestamp>/hp_search_results.json`，迁移搜索保存为 `checkpoints/<timestamp>/transfer_hp_search_results.json`：
 
 ```json
 {
@@ -585,13 +657,44 @@ PARAM_MAP = {
 
 ### 7.7 训练时自动加载
 
-`main.py` 默认检测 `hp_search_results.json`：
+`main.py` 默认检测当前运行目录下的 `hp_search_results.json`：
 - 文件存在 → 自动应用最优参数
 - `--ignore-search` → 忽略搜索结果
+
+**注意**：时间戳运行隔离后，自动加载仅在同一运行目录内生效。如需复用之前的搜索结果，需手动指定或重新搜索。
+
+### 7.8 迁移超参搜索
+
+`transfer.py` 的 `run_transfer_search()` 与 CIFAR-100 搜索结构一致，区别：
+- 使用 `_TransferNetClassifier`（每次 fold 自动加载预训练权重 + 冻结 backbone）
+- 搜索空间更小（`lr` 上限 0.1，搜索 epochs max=10）
+- 数据为 CIFAR-10（`_prepare_cifar10_data()`）
+- 结果保存为 `transfer_hp_search_results.json`
+
+通过 `--transfer --search` 或 `--transfer --search-only` 触发。
 
 ---
 
 ## 8. 使用方法
+
+### CIFAR-100 训练
+
+```bash
+# 完整训练（100 epochs，默认配置）
+uv run python src/Q3/main.py
+
+# 禁用数据增强
+uv run python src/Q3/main.py --no-augmentation
+
+# 快速测试（2 epochs）
+uv run python src/Q3/main.py --epochs 2
+
+# 自定义参数
+uv run python src/Q3/main.py --epochs 100 --batch-size 64 --lr 0.05
+
+# 启用 AMP 混合精度训练
+uv run python src/Q3/main.py --amp
+```
 
 ### 超参数搜索
 
@@ -605,16 +708,25 @@ uv run python src/Q3/main.py --search
 # 指定搜索策略
 uv run python src/Q3/main.py --search-only --search-strategy random
 uv run python src/Q3/main.py --search-only --search-strategy grid
+
+# 忽略已有搜索结果
+uv run python src/Q3/main.py --ignore-search
 ```
 
-### 自动使用搜索结果
+### 迁移学习（CIFAR-100 → CIFAR-10）
 
 ```bash
-# 搜索完成后，正常训练会自动加载最优参数
-uv run python src/Q3/main.py
+# 自动发现最优基础模型并迁移训练
+uv run python src/Q3/main.py --transfer
 
-# 忽略搜索结果，使用默认/CLI参数
-uv run python src/Q3/main.py --ignore-search
+# 指定源检查点
+uv run python src/Q3/main.py --transfer --transfer-checkpoint checkpoints/2026-05-24_143022/resnet18_cifar100_best.pth
+
+# 迁移 + 超参搜索
+uv run python src/Q3/main.py --transfer --search
+
+# 仅迁移超参搜索
+uv run python src/Q3/main.py --transfer --search-only
 ```
 
 ### 运行测试
@@ -622,47 +734,34 @@ uv run python src/Q3/main.py --ignore-search
 ```bash
 cd AIhomeworks
 uv sync  # 安装依赖（torch, torchvision, matplotlib, pytest）
-```
-
-### 完整训练（200 epochs）
-
-```bash
-uv run python src/Q3/main.py
-
-# 禁用数据增强
-uv run python src/Q3/main.py --no-augmentation
-```
-
-### 快速测试（2 epochs）
-
-```bash
-uv run python src/Q3/main.py --epochs 2
-```
-
-### 自定义参数
-
-```bash
-uv run python src/Q3/main.py --epochs 100 --batch-size 64 --lr 0.05
-```
-
-### 运行测试
-
-```bash
 uv run pytest src/Q3/tests/ -v
 ```
 
 ### 训练产物
 
-训练完成后，`checkpoints/` 目录下会生成：
+每次训练自动创建时间戳隔离目录，产物结构如下：
 
 ```
 checkpoints/
-├── resnet18_cifar100_best.pth                # 最佳完整模型
-├── resnet18_cifar100_feature_extractor.pth   # 特征提取器（迁移学习用）
-├── training_history.json                     # 训练历史
-├── hp_search_results.json                    # 超参数搜索结果
-└── plots/
-    ├── training_curves.png                   # Loss/Accuracy 曲线
-    ├── confusion_matrix.png                  # 混淆矩阵
-    └── lr_schedule.png                       # 学习率曲线
+├── 2026-05-24_143022/                          # CIFAR-100 训练运行
+│   ├── resnet18_cifar100_best.pth              # 最佳完整模型
+│   ├── resnet18_cifar100_feature_extractor.pth # 特征提取器
+│   ├── training_history.json                   # 训练历史
+│   ├── hp_search_results.json                  # 超参数搜索结果（如有）
+│   └── plots/
+│       ├── training_curves.png                 # Loss/Accuracy 曲线
+│       ├── confusion_matrix.png                # 混淆矩阵
+│       └── lr_schedule.png                     # 学习率曲线
+│
+└── 2026-05-24_160000/                          # CIFAR-10 迁移学习运行
+    ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
+    ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
+    ├── training_history.json                   # 训练历史
+    ├── transfer_hp_search_results.json         # 迁移搜索结果（如有）
+    └── plots/
+        ├── training_curves.png
+        ├── confusion_matrix.png
+        └── lr_schedule.png
 ```
+
+不同运行互不覆盖。`--transfer` 自动从所有运行中选 CIFAR-100 准确率最高的模型作为基础模型。

@@ -7,6 +7,7 @@ All hyperparameters live here as a single source.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -117,13 +118,10 @@ class TrainConfig:
     use_amp: bool = False  # Mixed precision (FP16) training / 混合精度训练
 
     # -- Early stopping / 早停 --
-    patience: int = 5  # Epochs to wait without improvement / 无改善等待轮数
+    patience: int = 6  # Epochs to wait without improvement / 无改善等待轮数
     min_delta: float = (
         1e-4  # Minimum accuracy improvement to qualify / 视为改善的最小准确率增量
     )
-
-    # -- Scheduler / 学习率调度 --
-    scheduler_t_max: int = 100  # Cosine annealing period / 余弦退火周期
 
     # -- Scheduler / 学习率调度 --
     scheduler_t_max: int = 100  # Cosine annealing period / 余弦退火周期
@@ -160,9 +158,9 @@ class SearchConfig:
     strategy: str = "halving-random"  # "halving-random", "random", "grid"
 
     # -- Successive halving / 逐步减半参数 --
-    search_epochs_min: int = 2   # 初始最少训练轮数 / minimum epochs at start
+    search_epochs_min: int = 2  # 初始最少训练轮数 / minimum epochs at start
     search_epochs_max: int = 20  # 最终最多训练轮数 / maximum epochs at end
-    halving_factor: int = 3      # 每轮保留 1/factor / keep top 1/factor per round
+    halving_factor: int = 3  # 每轮保留 1/factor / keep top 1/factor per round
 
     # -- Candidate sampling / 候选采样 --
     num_trials: int = 50  # 随机采样候选数 / number of random candidates
@@ -237,3 +235,52 @@ class TransferConfig:
     num_trials: int = 30
     cv: int = 3
     batch_size_choices: tuple[int, ...] = (64, 128, 256)
+
+
+# ---------------------------------------------------------------------------
+# Run directory helpers / 运行目录辅助函数
+# ---------------------------------------------------------------------------
+
+
+def generate_timestamp() -> str:
+    """
+    生成时间戳字符串，用于训练运行目录命名。
+    Generate timestamp string for run directory naming.
+
+    格式 YYYY-MM-DD_HHMMSS：可排序、可读、Windows 安全（无冒号）。
+    """
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+
+def make_run_dir(
+    base: Path = Path("checkpoints"),
+    timestamp: str | None = None,
+) -> Path:
+    """
+    构造带时间戳的运行目录路径。
+    Construct timestamped run directory path.
+
+    Args:
+        base: 基础目录，默认 checkpoints
+        timestamp: 时间戳字符串，None 时自动生成
+
+    Returns:
+        完整的运行目录路径（目录尚未创建，由各 save 函数按需创建）
+    """
+    if timestamp is None:
+        timestamp = generate_timestamp()
+    return base / timestamp
+
+
+def dataset_prefix(num_classes: int) -> str:
+    """
+    根据 num_classes 返回检查点文件名前缀。
+    Return checkpoint filename prefix based on num_classes.
+
+    100 → resnet18_cifar100, 10 → resnet18_cifar10, 其他 → resnet18_Ncls。
+    """
+    if num_classes == 100:
+        return "resnet18_cifar100"
+    if num_classes == 10:
+        return "resnet18_cifar10"
+    return f"resnet18_{num_classes}cls"
