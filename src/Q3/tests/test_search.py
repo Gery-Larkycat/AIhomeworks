@@ -371,82 +371,80 @@ class TestFitness:
         assert loss_decrease_rate([3.0]) == 0.0
 
     def test_compute_fitness_good_config(self):
-        """好配置（acc 上升、loss 下降）→ 高 fitness。"""
+        """好配置（val_acc 高、train/val gap 小）→ 高 fitness。"""
         fitness = compute_fitness(
-            [4.6, 4.0, 3.5, 3.1, 2.8],
-            [0.1, 0.2, 0.3, 0.4, 0.5],
+            [0.15, 0.25, 0.35, 0.45, 0.55],  # train_acc
+            [4.6, 4.0, 3.5, 3.1, 2.8],       # val_loss
+            [0.1, 0.2, 0.3, 0.4, 0.5],        # val_acc
         )
+        # val_acc=0.5, train_acc=0.55, gap=0.05 → fitness=0.5-0.05=0.45
         assert fitness > 0
         assert math.isfinite(fitness)
 
-    def test_compute_fitness_diverging(self):
-        """发散配置（acc 下降、loss 上升）→ 低 fitness。"""
-        fitness = compute_fitness(
-            [2.0, 3.0, 4.0, 5.0, 6.0],
-            [0.5, 0.4, 0.3, 0.2, 0.1],
+    def test_compute_fitness_overfitting_penalized(self):
+        """过拟合配置（train 高 val 低）被惩罚。"""
+        # 过拟合：train=60%, val=40% → fitness=40%-20%=20%
+        overfitting = compute_fitness(
+            [0.5, 0.55, 0.6],           # train_acc 高
+            [3.0, 3.5, 4.0],            # val_loss 上升
+            [0.35, 0.38, 0.40],         # val_acc 停滞
         )
-        # Penalized twice: acc down AND loss up → × 0.5 × 0.5 = × 0.25
-        assert fitness < 0
+        # 泛化好：train=35%, val=33% → fitness=33%-2%=31%
+        generalizing = compute_fitness(
+            [0.25, 0.30, 0.35],         # train_acc 适中
+            [4.0, 3.5, 3.0],            # val_loss 下降
+            [0.25, 0.29, 0.33],         # val_acc 稳步上升
+        )
+        # 泛化好的配置应胜出
+        assert generalizing > overfitting
 
-    def test_compute_fitness_diverging_penalty_strength(self):
-        """loss 上升触发 × 0.5 惩罚。"""
-        # Same acc trajectory (upward), but loss going up vs down
-        # 同样 acc 轨迹（上升），但 loss 一升一降
-        loss_down = compute_fitness(
-            [4.0, 3.0, 2.0],
-            [0.1, 0.2, 0.3],
+    def test_compute_fitness_no_gap_no_penalty(self):
+        """train/val 无差距时不惩罚。"""
+        # train=50%, val=50% → fitness=50%-0%=50%
+        fitness = compute_fitness(
+            [0.4, 0.45, 0.5],
+            [3.0, 2.5, 2.0],
+            [0.4, 0.45, 0.5],
         )
-        # Same but loss increasing → penalty × 0.5
-        # 同样但 loss 上升 → × 0.5 惩罚
-        loss_up_raw = compute_fitness(
-            [2.0, 3.0, 4.0],
-            [0.1, 0.2, 0.3],
-        )
-        # loss_down should be strictly better than loss_up
-        # loss 下降的应严格优于 loss 上升的
-        assert loss_down > loss_up_raw
+        assert abs(fitness - 0.5) < 1e-6
+
+    def test_compute_fitness_empty_returns_neg_inf(self):
+        """空列表 → fitness = -inf。"""
+        assert compute_fitness([], [], []) == float("-inf")
 
     def test_compute_fitness_nan_returns_neg_inf(self):
-        """NaN → fitness = -inf。"""
+        """NaN 在最终值中 → fitness = -inf。"""
         fitness = compute_fitness(
-            [float("nan"), 1.0],
-            [0.1, 0.2],
+            [0.3, 0.5],
+            [1.0, 1.0],
+            [0.1, float("nan")],
         )
         assert fitness == float("-inf")
 
     def test_compute_fitness_inf_returns_neg_inf(self):
-        """Inf → fitness = -inf。"""
+        """Inf 在最终值中 → fitness = -inf。"""
         fitness = compute_fitness(
-            [float("inf"), 1.0],
-            [0.1, 0.2],
+            [0.3, 0.5],
+            [1.0, 1.0],
+            [0.1, float("inf")],
         )
         assert fitness == float("-inf")
 
-    def test_compute_fitness_scaling(self):
-        """AIR 被 10x 放大，与 LDR 量级可比。"""
-        # Small acc improvement + large loss decrease
-        # 小 acc 提升 + 大 loss 下降
-        fitness = compute_fitness(
-            [5.0, 4.0, 3.0, 2.0, 1.0],  # LDR ≈ 1.0
-            [0.01, 0.02, 0.03, 0.04, 0.05],  # AIR ≈ 0.01
-        )
-        # fitness ≈ 10 * 0.01 + 1.0 = 1.1
-        assert fitness > 1.0
-
     def test_compute_fitness_ordering(self):
-        """更好的配置得到更高的 fitness。"""
-        # Great: fast acc rise + fast loss drop
-        # 极好：acc 快速上升 + loss 快速下降
-        great = compute_fitness(
-            [5.0, 4.0, 3.0, 2.0, 1.0],
-            [0.1, 0.2, 0.3, 0.4, 0.5],
+        """val_acc 更高且 gap 更小的配置得到更高 fitness。"""
+        # 配置 A: val=0.5, train=0.52, gap=0.02 → 0.48
+        config_a = compute_fitness(
+            [0.4, 0.46, 0.52],
+            [3.0, 2.5, 2.0],
+            [0.4, 0.45, 0.5],
         )
-        # Good: slower improvement / 好：改善较慢
-        good = compute_fitness(
-            [4.0, 3.5, 3.0, 2.5, 2.0],
-            [0.1, 0.15, 0.2, 0.25, 0.3],
+        # 配置 B: val=0.3, train=0.6, gap=0.3 → 0.0
+        config_b = compute_fitness(
+            [0.4, 0.5, 0.6],
+            [4.0, 4.5, 5.0],
+            [0.2, 0.25, 0.3],
         )
-        assert great > good
+        assert config_a > config_b
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +805,7 @@ class TestTrainProbe:
         search_cfg = dataclasses.replace(
             SearchConfig(), search_epochs=2
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
         device = torch.device("cpu")
@@ -822,15 +820,17 @@ class TestTrainProbe:
         }
         fitness, history = train_probe(
             params, config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=42,
         )
         assert isinstance(fitness, float)
         assert math.isfinite(fitness)
-        assert "test_loss" in history
-        assert "test_acc" in history
-        assert len(history["test_loss"]) == 2
-        assert len(history["test_acc"]) == 2
+        assert "train_acc" in history
+        assert "val_loss" in history
+        assert "val_acc" in history
+        assert len(history["train_acc"]) == 2
+        assert len(history["val_loss"]) == 2
+        assert len(history["val_acc"]) == 2
 
     @pytest.mark.parametrize(
         "opt", ["sgd", "adam", "adamw", "rmsprop", "nadam"]
@@ -841,7 +841,7 @@ class TestTrainProbe:
         search_cfg = dataclasses.replace(
             SearchConfig(), search_epochs=1
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
         device = torch.device("cpu")
@@ -856,11 +856,11 @@ class TestTrainProbe:
         }
         fitness, history = train_probe(
             params, config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=42,
         )
         assert math.isfinite(fitness)
-        assert len(history["test_loss"]) == 1
+        assert len(history["val_loss"]) == 1
 
     @pytest.mark.parametrize("sch", ["cosine", "step", "constant"])
     def test_probe_all_schedulers(self, sch):
@@ -869,7 +869,7 @@ class TestTrainProbe:
         search_cfg = dataclasses.replace(
             SearchConfig(), search_epochs=2
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
         device = torch.device("cpu")
@@ -884,11 +884,11 @@ class TestTrainProbe:
         }
         fitness, history = train_probe(
             params, config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=42,
         )
         assert math.isfinite(fitness)
-        assert len(history["test_loss"]) == 2
+        assert len(history["val_loss"]) == 2
 
     def test_probe_deterministic_with_seed(self):
         """相同 seed 产生相同结果。"""
@@ -896,7 +896,7 @@ class TestTrainProbe:
         search_cfg = dataclasses.replace(
             SearchConfig(), search_epochs=2
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
         device = torch.device("cpu")
@@ -911,17 +911,18 @@ class TestTrainProbe:
         }
         f1, h1 = train_probe(
             params, config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=123,
         )
         f2, h2 = train_probe(
             params, config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=123,
         )
         assert f1 == f2
-        assert h1["test_loss"] == h2["test_loss"]
-        assert h1["test_acc"] == h2["test_acc"]
+        assert h1["train_acc"] == h2["train_acc"]
+        assert h1["val_loss"] == h2["val_loss"]
+        assert h1["val_acc"] == h2["val_acc"]
 
 
 class TestEvolutionarySearchIntegration:
@@ -942,10 +943,10 @@ class TestEvolutionarySearchIntegration:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         best_params, all_records = evolutionary_search(
@@ -984,10 +985,10 @@ class TestEvolutionarySearchIntegration:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         _, all_records = evolutionary_search(
@@ -1020,10 +1021,10 @@ class TestEvolutionarySearchIntegration:
             scheduler_type=("cosine",),
             learning_rate=HyperparamRange(0.001, 0.01, "log_uniform"),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         _, all_records = evolutionary_search(
@@ -1059,10 +1060,11 @@ class TestResultLogging:
                 "generation": 0,
                 "params": best_params,
                 "fitness": 0.8,
-                "final_test_acc": 0.15,
-                "final_test_loss": 3.5,
-                "test_acc_history": [0.05, 0.10, 0.15],
-                "test_loss_history": [4.0, 3.7, 3.5],
+                "final_val_acc": 0.15,
+                "final_val_loss": 3.5,
+                "train_acc_history": [0.08, 0.12, 0.18],
+                "val_acc_history": [0.05, 0.10, 0.15],
+                "val_loss_history": [4.0, 3.7, 3.5],
             }
         ]
 
@@ -1117,10 +1119,10 @@ class TestRandomSearch:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         best_params, all_records = random_search(
@@ -1148,10 +1150,10 @@ class TestRandomSearch:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         best_params, all_records = random_search(
@@ -1161,7 +1163,10 @@ class TestRandomSearch:
         # best_params should match the record with highest fitness
         # best_params 应与 fitness 最高的记录匹配
         best_rec = max(all_records, key=lambda r: r["fitness"])
-        assert best_params["learning_rate"] == best_rec["params"]["learning_rate"]
+        assert (
+            best_params["learning_rate"]
+            == best_rec["params"]["learning_rate"]
+        )
 
     def test_random_search_all_generation_zero(self):
         """随机搜索所有记录的 generation 为 0。"""
@@ -1175,10 +1180,10 @@ class TestRandomSearch:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         _, all_records = random_search(
@@ -1273,7 +1278,10 @@ class TestGenerateGrid:
         mom_vals = sorted(set(p["momentum"] for p in grid))
         assert len(mom_vals) == 4
         # Linear spacing / 线性间距
-        diffs = [mom_vals[i + 1] - mom_vals[i] for i in range(len(mom_vals) - 1)]
+        diffs = [
+            mom_vals[i + 1] - mom_vals[i]
+            for i in range(len(mom_vals) - 1)
+        ]
         mean_diff = sum(diffs) / len(diffs)
         for d in diffs:
             assert abs(d - mean_diff) < 1e-10
@@ -1365,10 +1373,10 @@ class TestGridSearch:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         best_params, all_records = grid_search(
@@ -1392,10 +1400,10 @@ class TestGridSearch:
             optimizer_type=("sgd", "adam"),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         best_params, all_records = grid_search(
@@ -1422,10 +1430,10 @@ class TestGridSearch:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         best_params, all_records = grid_search(
@@ -1433,7 +1441,10 @@ class TestGridSearch:
         )
 
         best_rec = max(all_records, key=lambda r: r["fitness"])
-        assert best_params["learning_rate"] == best_rec["params"]["learning_rate"]
+        assert (
+            best_params["learning_rate"]
+            == best_rec["params"]["learning_rate"]
+        )
 
     def test_grid_search_all_generation_zero(self):
         """网格搜索所有记录的 generation 为 0。"""
@@ -1447,10 +1458,10 @@ class TestGridSearch:
             optimizer_type=("sgd",),
             scheduler_type=("cosine",),
         )
-        train_loader, test_loader = _make_synthetic_loaders(
+        train_loader, val_loader = _make_synthetic_loaders(
             batch_size=16
         )
-        loaders_by_batch = {16: (train_loader, test_loader)}
+        loaders_by_batch = {16: (train_loader, val_loader)}
         device = torch.device("cpu")
 
         _, all_records = grid_search(
@@ -1469,16 +1480,15 @@ class TestGridSearch:
 class TestSearchConfigStrategy:
     """Test SearchConfig strategy field."""
 
-    def test_default_strategy_is_evolutionary(self):
-        """默认策略为演化搜索。"""
+    def test_default_strategy_is_random(self):
+        """默认策略为随机搜索。"""
         cfg = SearchConfig()
-        assert cfg.strategy == "evolutionary"
-
-    def test_strategy_random(self):
-        """可设置策略为随机搜索。"""
-        cfg = dataclasses.replace(SearchConfig(), strategy="random")
         assert cfg.strategy == "random"
-        assert cfg.num_trials == 20
+
+    def test_strategy_evolutionary(self):
+        """可设置策略为演化搜索。"""
+        cfg = dataclasses.replace(SearchConfig(), strategy="evolutionary")
+        assert cfg.strategy == "evolutionary"
 
     def test_strategy_grid(self):
         """可设置策略为网格搜索。"""
@@ -1488,8 +1498,8 @@ class TestSearchConfigStrategy:
 
     def test_random_search_config_defaults(self):
         """随机搜索默认值合理。"""
-        cfg = dataclasses.replace(SearchConfig(), strategy="random")
-        assert cfg.num_trials == 20
+        cfg = SearchConfig()
+        assert cfg.num_trials == 10
         assert cfg.search_epochs == 5
 
     def test_grid_search_config_defaults(self):

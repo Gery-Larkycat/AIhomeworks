@@ -117,13 +117,16 @@ class TrainConfig:
     use_amp: bool = False  # Mixed precision (FP16) training / 混合精度训练
 
     # -- Early stopping / 早停 --
-    patience: int = 6  # Epochs to wait without improvement / 无改善等待轮数
+    patience: int = 5  # Epochs to wait without improvement / 无改善等待轮数
     min_delta: float = (
         1e-4  # Minimum accuracy improvement to qualify / 视为改善的最小准确率增量
     )
 
     # -- Scheduler / 学习率调度 --
     scheduler_t_max: int = 100  # Cosine annealing period / 余弦退火周期
+
+    # -- Validation split / 验证集划分 --
+    val_ratio: float = 0.1  # 从训练集划出 10% 作为验证集 / 10% of training data for validation
 
     # -- Data loading / 数据加载 --
     num_workers: int = (

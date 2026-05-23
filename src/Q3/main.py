@@ -199,7 +199,7 @@ def main() -> None:
         search_cfg = SearchConfig(**search_overrides)
 
         best_params = run_search(
-            config, train_loader, test_loader,
+            config, train_loader,
             search_cfg=search_cfg,
         )
 

@@ -168,28 +168,35 @@ def loss_decrease_rate(
 
 
 def compute_fitness(
-    test_loss_history: list[float],
-    test_acc_history: list[float],
+    train_acc_history: list[float],
+    val_loss_history: list[float],
+    val_acc_history: list[float],
 ) -> float:
     """
-    Combined fitness: weighted AIR + LDR.
-    综合适应度：加权准确率提升速率 + 损失下降速率。
+    泛化导向适应度：最终验证准确率减去过拟合惩罚。
+    Generalization-focused fitness: final val accuracy minus overfit penalty.
 
-    Uses test metrics (not train) to favor generalization.
-    使用测试指标（非训练）以偏好泛化性好的配置。
+    fitness = val_acc_final - OVERFIT_PENALTY * max(0, train_acc - val_acc)
+
+    偏好高验证准确率且低 train/val gap 的配置，惩罚死记硬背。
+    train=60%, val=40% → fitness = 40% - 1.0*20% = 20%
+    train=35%, val=33% → fitness = 33% - 1.0*2%  = 31%  ← 胜出
+
+    Args:
+        train_acc_history: 每个 epoch 的训练准确率
+        val_loss_history: 每个 epoch 的验证损失
+        val_acc_history: 每个 epoch 的验证准确率
     """
-    air = accuracy_improvement_rate(test_acc_history)
-    ldr = loss_decrease_rate(test_loss_history)
+    OVERFIT_PENALTY = 1.0
 
-    # Scale AIR × 10 to match LDR magnitude
-    # AIR 通常 0.01-0.10/epoch，LDR 通常 0.1-0.5/epoch
-    fitness = 10.0 * air + ldr
+    if not val_acc_history or not train_acc_history:
+        return float("-inf")
 
-    # Penalty for divergence / 发散惩罚
-    if test_acc_history[-1] < test_acc_history[0]:
-        fitness *= 0.5
-    if test_loss_history[-1] > test_loss_history[0]:
-        fitness *= 0.5
+    val_acc_final = val_acc_history[-1]
+    train_acc_final = train_acc_history[-1]
+
+    overfit_gap = max(0.0, train_acc_final - val_acc_final)
+    fitness = val_acc_final - OVERFIT_PENALTY * overfit_gap
 
     # NaN/Inf guard / 异常值保护
     if not math.isfinite(fitness):
@@ -310,7 +317,7 @@ def train_probe(
     base_config: TrainConfig,
     search_cfg: SearchConfig,
     train_loader: DataLoader,
-    test_loader: DataLoader,
+    val_loader: DataLoader,
     device: torch.device,
     seed: int,
 ) -> tuple[float, dict[str, list[float]]]:
@@ -320,6 +327,7 @@ def train_probe(
 
     Returns (fitness, history_dict).
     返回 (适应度, 历史字典)。
+    history 包含 train_acc, val_loss, val_acc 三组指标。
 
     Each probe gets a deterministic seed for reproducibility.
     每次探针使用确定性种子以保证可复现。
@@ -347,29 +355,35 @@ def train_probe(
         scheduler = create_scheduler(optimizer, config)
         criterion = create_criterion(config)
 
-        test_loss_hist: list[float] = []
-        test_acc_hist: list[float] = []
+        train_acc_hist: list[float] = []
+        val_loss_hist: list[float] = []
+        val_acc_hist: list[float] = []
 
         for epoch in range(1, search_cfg.search_epochs + 1):
-            train_one_epoch(
+            # 捕获训练损失和准确率 / Capture train loss & accuracy
+            train_loss, train_acc = train_one_epoch(
                 model, train_loader, optimizer,
                 criterion, device, epoch,
                 aug_config=config.augmentation,
                 num_classes=config.num_classes,
             )
-            test_loss, test_acc = evaluate(
-                model, test_loader, device
+            val_loss, val_acc = evaluate(
+                model, val_loader, device
             )
             if scheduler is not None:
                 scheduler.step()
 
-            test_loss_hist.append(test_loss)
-            test_acc_hist.append(test_acc)
+            train_acc_hist.append(train_acc)
+            val_loss_hist.append(val_loss)
+            val_acc_hist.append(val_acc)
 
-        fitness = compute_fitness(test_loss_hist, test_acc_hist)
+        fitness = compute_fitness(
+            train_acc_hist, val_loss_hist, val_acc_hist
+        )
         history = {
-            "test_loss": test_loss_hist,
-            "test_acc": test_acc_hist,
+            "train_acc": train_acc_hist,
+            "val_loss": val_loss_hist,
+            "val_acc": val_acc_hist,
         }
         return fitness, history
 
@@ -379,7 +393,7 @@ def train_probe(
         if "out of memory" in str(e).lower():
             torch.cuda.empty_cache()
         return float("-inf"), {
-            "test_loss": [], "test_acc": [],
+            "train_acc": [], "val_loss": [], "val_acc": [],
         }
 
 
@@ -410,10 +424,10 @@ def evolutionary_search(
     for i in range(search_cfg.population_size):
         params = sample_individual(search_cfg, rng)
         bs = int(params.get("batch_size", base_config.batch_size))
-        train_loader, test_loader = loaders_by_batch[bs]
+        train_loader, val_loader = loaders_by_batch[bs]
         fitness, history = train_probe(
             params, base_config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=_BASE_SEED + eval_id,
         )
         ind = Individual(
@@ -461,10 +475,10 @@ def evolutionary_search(
                     "batch_size", base_config.batch_size
                 )
             )
-            train_loader, test_loader = loaders_by_batch[bs]
+            train_loader, val_loader = loaders_by_batch[bs]
             fitness, history = train_probe(
                 child_params, base_config, search_cfg,
-                train_loader, test_loader, device,
+                train_loader, val_loader, device,
                 seed=_BASE_SEED + eval_id,
             )
 
@@ -547,11 +561,11 @@ def random_search(
     for i in range(search_cfg.num_trials):
         params = sample_individual(search_cfg, rng)
         bs = int(params.get("batch_size", base_config.batch_size))
-        train_loader, test_loader = loaders_by_batch[bs]
+        train_loader, val_loader = loaders_by_batch[bs]
 
         fitness, history = train_probe(
             params, base_config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=_BASE_SEED + i,
         )
 
@@ -704,11 +718,11 @@ def grid_search(
 
     for i, params in enumerate(grid_points):
         bs = int(params.get("batch_size", base_config.batch_size))
-        train_loader, test_loader = loaders_by_batch[bs]
+        train_loader, val_loader = loaders_by_batch[bs]
 
         fitness, history = train_probe(
             params, base_config, search_cfg,
-            train_loader, test_loader, device,
+            train_loader, val_loader, device,
             seed=_BASE_SEED + i,
         )
 
@@ -746,19 +760,21 @@ def _make_record(
     history: dict[str, list[float]],
 ) -> dict[str, object]:
     """Build a JSON-serializable evaluation record."""
-    acc_hist = history.get("test_acc", [])
-    loss_hist = history.get("test_loss", [])
+    train_acc_hist = history.get("train_acc", [])
+    val_acc_hist = history.get("val_acc", [])
+    val_loss_hist = history.get("val_loss", [])
     return {
         "id": eval_id,
         "generation": generation,
         "params": params,
         "fitness": round(fitness, 6),
-        "final_test_acc": round(acc_hist[-1], 4)
-        if acc_hist else None,
-        "final_test_loss": round(loss_hist[-1], 4)
-        if loss_hist else None,
-        "test_acc_history": [round(v, 4) for v in acc_hist],
-        "test_loss_history": [round(v, 4) for v in loss_hist],
+        "final_val_acc": round(val_acc_hist[-1], 4)
+        if val_acc_hist else None,
+        "final_val_loss": round(val_loss_hist[-1], 4)
+        if val_loss_hist else None,
+        "train_acc_history": [round(v, 4) for v in train_acc_hist],
+        "val_acc_history": [round(v, 4) for v in val_acc_hist],
+        "val_loss_history": [round(v, 4) for v in val_loss_hist],
     }
 
 
@@ -814,10 +830,11 @@ def log_search_results(
         ("best", OrderedDict([
             ("params", best_params),
             ("fitness", best_record.get("fitness")),
-            ("final_test_acc", best_record.get("final_test_acc")),
-            ("final_test_loss", best_record.get("final_test_loss")),
-            ("test_acc_history", best_record.get("test_acc_history")),
-            ("test_loss_history", best_record.get("test_loss_history")),
+            ("final_val_acc", best_record.get("final_val_acc")),
+            ("final_val_loss", best_record.get("final_val_loss")),
+            ("train_acc_history", best_record.get("train_acc_history")),
+            ("val_acc_history", best_record.get("val_acc_history")),
+            ("val_loss_history", best_record.get("val_loss_history")),
         ])),
         ("generation_summary", gen_summary),
         ("all_evaluated", all_records),
@@ -891,7 +908,6 @@ _STRATEGY_LABELS: dict[str, tuple[str, str]] = {
 def run_search(
     config: TrainConfig,
     train_loader: DataLoader,
-    test_loader: DataLoader,
     search_cfg: SearchConfig | None = None,
 ) -> dict[str, object]:
     """
@@ -906,6 +922,10 @@ def run_search(
     dataclasses.replace(config, **best_params).
     返回最优参数字典，可用于
     dataclasses.replace(config, **best_params)。
+
+    Uses validation split (get_cifar100_search_loaders) during search;
+    test set is never touched during search.
+    搜索期间使用验证集划分；test set 在搜索期间完全不碰。
 
     Handles DataLoader creation for different batch_sizes by
     pre-creating loaders for each candidate batch_size.
@@ -950,26 +970,20 @@ def run_search(
     print(f"  Device: {device}")
     print()
 
-    # Pre-create loaders for each batch_size candidate
-    # 预创建每种 batch_size 的 DataLoader
+    # Pre-create search loaders (train_subset + val) for each batch_size
+    # 预创建每种 batch_size 的搜索用 DataLoader（训练子集 + 验证集）
+    from .data import get_cifar100_search_loaders
+
     loaders_by_batch: dict[int, tuple[DataLoader, DataLoader]] = {}
-    if search_cfg.batch_size is not None:
-        for bs in search_cfg.batch_size:
-            if bs == config.batch_size:
-                loaders_by_batch[bs] = (
-                    train_loader, test_loader
-                )
-            else:
-                from .data import get_cifar100_loaders
-                cfg_bs = dataclasses.replace(
-                    config, batch_size=bs
-                )
-                loaders_by_batch[bs] = get_cifar100_loaders(
-                    cfg_bs
-                )
-    else:
-        loaders_by_batch[config.batch_size] = (
-            train_loader, test_loader
+    batch_sizes = (
+        search_cfg.batch_size
+        if search_cfg.batch_size is not None
+        else (config.batch_size,)
+    )
+    for bs in batch_sizes:
+        cfg_bs = dataclasses.replace(config, batch_size=bs)
+        loaders_by_batch[bs] = get_cifar100_search_loaders(
+            cfg_bs
         )
 
     # Run search / 运行搜索
