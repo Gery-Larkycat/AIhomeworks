@@ -112,3 +112,78 @@ def test_spatial_dimensions() -> None:
 
         out = model.layer4(out)
         assert out.shape[2:] == (4, 4), f"After layer4: {out.shape}"
+
+
+# ---------------------------------------------------------------------------
+# Dropout tests / Dropout 测试
+# ---------------------------------------------------------------------------
+
+
+def test_dropout_default_is_identity() -> None:
+    """
+    dropout_rate=0 时 Dropout 等价于恒等变换（eval 模式下）。
+    With dropout_rate=0, Dropout is identity in eval mode.
+    """
+    model = create_model(num_classes=100, dropout_rate=0.0)
+    model.eval()
+    x = torch.randn(2, 3, 32, 32)
+    with torch.no_grad():
+        out = model(x)
+    assert out.shape == (2, 100)
+
+
+def test_dropout_with_rate() -> None:
+    """
+    dropout_rate=0.5 时模型可正常前向传播。
+    Model forward pass works with dropout_rate=0.5.
+    """
+    model = create_model(num_classes=100, dropout_rate=0.5)
+    model.eval()
+    x = torch.randn(2, 3, 32, 32)
+    with torch.no_grad():
+        out = model(x)
+    assert out.shape == (2, 100)
+
+
+def test_dropout_train_mode_actually_drops() -> None:
+    """
+    dropout_rate=0.5 时，训练模式下多次前向传播结果不完全相同。
+    With dropout_rate=0.5, multiple forward passes in train mode differ.
+    """
+    model = create_model(num_classes=100, dropout_rate=0.5)
+    model.train()
+    x = torch.randn(2, 3, 32, 32)
+    with torch.no_grad():
+        out1 = model(x)
+        out2 = model(x)
+    # 极大概率不相等（Dropout 随机丢弃不同神经元）
+    assert not torch.allclose(out1, out2), (
+        "Dropout should produce different outputs in train mode"
+    )
+
+
+def test_dropout_module_exists() -> None:
+    """
+    验证模型包含 Dropout 模块且概率正确。
+    Verify model contains Dropout module with correct probability.
+    """
+    import torch.nn as nn
+
+    model = create_model(num_classes=100, dropout_rate=0.3)
+    dropout_layers = [
+        m for m in model.modules() if isinstance(m, nn.Dropout)
+    ]
+    assert len(dropout_layers) == 1, "Should have exactly one Dropout layer"
+    assert dropout_layers[0].p == 0.3
+
+
+def test_dropout_not_affecting_param_count() -> None:
+    """
+    Dropout 不改变参数量。
+    Dropout does not change parameter count.
+    """
+    model_no_drop = create_model(num_classes=100, dropout_rate=0.0)
+    model_with_drop = create_model(num_classes=100, dropout_rate=0.5)
+    params_no = sum(p.numel() for p in model_no_drop.parameters())
+    params_with = sum(p.numel() for p in model_with_drop.parameters())
+    assert params_no == params_with

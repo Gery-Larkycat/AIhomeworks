@@ -88,6 +88,7 @@ src/Q3/
 ┌─────────────────────────┐
 │  AdaptiveAvgPool2d(1,1)  │  → (B, 512, 1, 1)
 │  Flatten                 │  → (B, 512)
+│  Dropout(p=dropout_rate) │  正则化，默认 p=0.5
 │  Linear(512→num_classes) │  → (B, 100)
 └─────────────────────────┘
 ```
@@ -160,17 +161,18 @@ src/Q3/
 | `data_root` | `"data"` | CIFAR-100 数据存放路径 |
 | `checkpoint_dir` | `"checkpoints"` | 检查点保存路径（运行时覆盖为时间戳子目录） |
 | `num_classes` | `100` | 分类数（CIFAR-100=100） |
+| `dropout_rate` | `0.5` | FC 前 Dropout 比率（0=禁用） |
 | `batch_size` | `1024` | 批大小 |
-| `epochs` | `100` | 训练轮数 |
+| `epochs` | `150` | 训练轮数 |
 | `learning_rate` | `0.1` | 初始学习率 |
 | `momentum` | `0.9` | SGD 动量 |
 | `weight_decay` | `5e-4` | L2 正则化系数 |
 | `label_smoothing` | `0.1` | 标签平滑系数 |
 | `optimizer_type` | `"sgd"` | 优化器类型（sgd/adam/adamw/rmsprop/nadam） |
 | `scheduler_type` | `"cosine"` | 调度器类型（cosine/constant/step） |
-| `patience` | `6` | 早停等待轮数 |
+| `patience` | `8` | 早停等待轮数 |
 | `min_delta` | `1e-4` | 视为改善的最小准确率增量 |
-| `scheduler_t_max` | `100` | 余弦退火周期（= epochs） |
+| `scheduler_t_max` | `150` | 余弦退火周期（= epochs） |
 | `mean` | `(0.5071, 0.4867, 0.4408)` | CIFAR-100 均值 |
 | `std` | `(0.2675, 0.2565, 0.2761)` | CIFAR-100 标准差 |
 | `augmentation` | `AugmentationConfig()` | 数据增强配置（独立管理） |
@@ -216,6 +218,7 @@ src/Q3/
 - `optimizer__momentum`: uniform(0.85, 0.14) → [0.85, 0.99]
 - `optimizer__weight_decay`: loguniform(1e-6, 1e-2)
 - `batch_size`: 离散候选列表
+- `module__dropout_rate`: uniform(0.0, 0.5) / 网格搜索: [0.0, 0.1, 0.3, 0.5]
 
 `frozen=True` 保证训练过程中配置不被意外修改。搜索固定使用 SGD（ResNet-18 标准优化器）。
 
@@ -239,11 +242,11 @@ src/Q3/
 
 - **`BasicBlock(nn.Module)`**：标准残差块。第一个 conv 接受 `stride` 参数用于下采样，第二个 conv 始终 stride=1。`expansion=1`（ResNet-18 不使用 bottleneck）。
 - **`ResNet18(nn.Module)`**：
-  - `__init__`：构建 stem → 4 层残差组 → 分类头。`_make_layer` 递增 `self.in_channels` 供下一层使用。
+  - `__init__`：构建 stem → 4 层残差组 → 分类头。`dropout_rate` 参数控制 FC 前的 Dropout（默认 0.5，设 0 禁用）。`_make_layer` 递增 `self.in_channels` 供下一层使用。
   - `_make_layer(out_channels, num_blocks, stride)`：构建一组 BasicBlock。第一个块使用传入的 stride（可能下采样），后续块 stride=1。
   - `_initialize_weights()`：Kaiming 初始化卷积，常数初始化 BN。
-  - `forward(x)`：stem → layer1-4 → avgpool → flatten → fc。
-- **`create_model(num_classes=100)`**：工厂函数，创建模型实例。
+  - `forward(x)`：stem → layer1-4 → avgpool → flatten → dropout → fc。
+- **`create_model(num_classes=100, dropout_rate=0.0)`**：工厂函数，创建模型实例。
 - **`get_feature_extractor_state(model)`**：返回去掉 `fc.` 前缀的 state_dict，供迁移学习使用。
 
 ### 3.3 `data.py` — 数据加载
@@ -354,7 +357,7 @@ src/Q3/
 → 最终评估 → 生成可视化
 ```
 
-支持命令行覆盖配置：`--epochs`, `--batch-size`, `--lr`, `--data-root`, `--eval-only`, `--amp`, `--no-augmentation`。
+支持命令行覆盖配置：`--epochs`, `--batch-size`, `--lr`, `--dropout`, `--data-root`, `--eval-only`, `--amp`, `--no-augmentation`。
 
 搜索相关参数：`--search`（搜索+训练）、`--search-only`（仅搜索）、`--ignore-search`（忽略已有结果）。
 
@@ -486,7 +489,7 @@ augment.py
 | **优化器** | 可配置（默认 SGD, momentum=0.9） | 通过 `create_optimizer()` 工厂函数支持 SGD/Adam/AdamW/RMSprop/NAdam |
 | **学习率调度** | 可配置（默认 CosineAnnealingLR） | 通过 `create_scheduler()` 工厂函数支持 cosine/step/constant |
 | **损失函数** | CrossEntropyLoss (label_smoothing=0.1) | 100 类分类中，标签平滑防止模型过度自信，提升泛化能力 |
-| **正则化** | weight_decay=5e-4 + BN | L2 正则化配合 BatchNorm 是 ResNet 的标准配置 |
+| **正则化** | weight_decay=5e-4 + BN + Dropout(0.5) | L2 正则化配合 BatchNorm 和 FC 前 Dropout |
 | **早停** | patience=6, min_delta=1e-4 | 防止过拟合，避免无效训练 |
 
 ### 5.2 学习率变化
@@ -494,12 +497,12 @@ augment.py
 余弦退火将学习率从 0.1 平滑降到接近 0：
 
 ```
-lr(t) = 0.5 * 0.1 * (1 + cos(π * t / 200))
+lr(t) = 0.5 * 0.1 * (1 + cos(π * t / 150))
 ```
 
 - Epoch 1: lr ≈ 0.1（快速学习）
-- Epoch 100: lr ≈ 0.05（中期减速）
-- Epoch 200: lr ≈ 0（精细收敛）
+- Epoch 75: lr ≈ 0.05（中期减速）
+- Epoch 150: lr ≈ 0（精细收敛）
 
 ### 5.3 预期性能
 
@@ -664,6 +667,7 @@ return TrainConfig(**overrides)
 | 动量 | `optimizer__momentum` | uniform | [0.85, 0.99] | `momentum` |
 | 权重衰减 | `optimizer__weight_decay` | loguniform | [1e-6, 1e-2] | `weight_decay` |
 | 批大小 | `batch_size` | 离散 | [128, 256, 512] | `batch_size` |
+| Dropout | `module__dropout_rate` | uniform | [0.0, 0.5] | `dropout_rate` |
 
 连续参数使用 `scipy.stats` 分布（loguniform / uniform），离散参数使用候选列表。
 
@@ -717,6 +721,7 @@ PARAM_MAP = {
     "optimizer__momentum": "momentum",
     "optimizer__weight_decay": "weight_decay",
     "batch_size": "batch_size",
+    "module__dropout_rate": "dropout_rate",
 }
 ```
 
@@ -747,8 +752,14 @@ PARAM_MAP = {
 ### CIFAR-100 训练
 
 ```bash
-# 完整训练（100 epochs，默认配置）
+# 完整训练（默认 150 epochs, dropout=0.5）
 uv run python src/Q3/main.py
+
+# 禁用 Dropout
+uv run python src/Q3/main.py --dropout 0
+
+# 自定义 Dropout 比率
+uv run python src/Q3/main.py --dropout 0.3
 
 # 禁用数据增强
 uv run python src/Q3/main.py --no-augmentation

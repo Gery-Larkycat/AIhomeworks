@@ -80,7 +80,9 @@ class ResNet18(nn.Module):
     头部：AdaptiveAvgPool2d → Linear(512, num_classes)
     """
 
-    def __init__(self, num_classes: int = 100, **kwargs) -> None:
+    def __init__(
+        self, num_classes: int = 100, dropout_rate: float = 0.0, **kwargs
+    ) -> None:
         super().__init__()
         self.in_channels = 64
 
@@ -99,7 +101,10 @@ class ResNet18(nn.Module):
         self.layer4 = self._make_layer(512, num_blocks=2, stride=2)
 
         # Classification head / 分类头部
+        # Dropout after global avg pool, before FC; rate=0 means no-op
+        # 全局平均池化后、FC 前的 Dropout；rate=0 等价于无操作
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = nn.Dropout(p=dropout_rate)
         self.fc = nn.Linear(512, num_classes)
 
         # Weight initialization / 权重初始化
@@ -141,16 +146,17 @@ class ResNet18(nn.Module):
         # Head
         out = self.avgpool(out)
         out = torch.flatten(out, 1)
+        out = self.dropout(out)
         out = self.fc(out)
         return out
 
 
-def create_model(num_classes: int = 100) -> ResNet18:
+def create_model(num_classes: int = 100, dropout_rate: float = 0.0) -> ResNet18:
     """
     Factory function: create a ResNet-18 instance.
     工厂函数：创建 ResNet-18 实例。
     """
-    return ResNet18(num_classes=num_classes)
+    return ResNet18(num_classes=num_classes, dropout_rate=dropout_rate)
 
 
 def get_feature_extractor_state(model: ResNet18) -> OrderedDict[str, Any]:

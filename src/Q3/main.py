@@ -137,6 +137,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--dropout", type=float, default=None,
+        help=(
+            "Dropout rate before FC layer (0 = disabled)"
+            " / FC 前的 Dropout 比率（0 = 禁用）"
+        ),
+    )
+    parser.add_argument(
         "--tv-transfer", action="store_true",
         help=(
             "Transfer learn using PyTorch pretrained ResNet-18"
@@ -169,6 +176,8 @@ def build_config(
         )
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
+    if args.dropout is not None:
+        overrides["dropout_rate"] = args.dropout
     return TrainConfig(**overrides)
 
 
@@ -492,7 +501,10 @@ def main() -> None:
     print()
 
     # Create model / 创建模型
-    model = create_model(num_classes=config.num_classes)
+    model = create_model(
+        num_classes=config.num_classes,
+        dropout_rate=config.dropout_rate,
+    )
     num_params = sum(p.numel() for p in model.parameters())
     print(
         f"Model: ResNet-18"
@@ -552,7 +564,8 @@ def main() -> None:
             config
         )
         model = create_model(
-            num_classes=config.num_classes
+            num_classes=config.num_classes,
+            dropout_rate=config.dropout_rate,
         )
     elif not args.ignore_search:
         # Auto-load existing search results if available
@@ -576,7 +589,8 @@ def main() -> None:
                 get_cifar100_loaders(config)
             )
             model = create_model(
-                num_classes=config.num_classes
+                num_classes=config.num_classes,
+                dropout_rate=config.dropout_rate,
             )
 
     # Train / 训练

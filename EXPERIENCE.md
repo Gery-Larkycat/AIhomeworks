@@ -45,3 +45,9 @@
 - **ImageNet 归一化必须匹配**：使用 torchvision 预训练模型时，必须用 ImageNet 的归一化统计量（mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]），而非 CIFAR-10 的统计量。否则预训练特征无法正确激活。
 - **FC 参数少（5,130）**：torchvision ResNet-18 的 FC 是 Linear(512, 10)，冻结 backbone 后仅 5,130 可训练参数。相比 CIFAR-100 自训练迁移（52,310 参数），训练更快但对数据量要求更低。
 - **`train()` 函数通用性**：已有的 `train()` 函数完全不感知模型来源，只通过 `requires_grad` 过滤可训练参数，因此 torchvision 模型可以直接复用同一训练循环、检查点保存、早停逻辑。
+
+## Dropout / Dropout 正则化
+
+- **Dropout 位置选择**：放在 `AdaptiveAvgPool2d` 之后、FC 之前是 ResNet 的标准做法。不在 BasicBlock 内部加 Dropout，因为残差连接 + BN 已提供足够正则化，Block 内 Dropout 反而可能破坏 shortcut 的信息流。
+- **Dropout 不增加参数量**：`nn.Dropout` 没有可学习参数，不影响 `state_dict` 结构，也不会影响预训练权重加载（迁移学习无需调整）。
+- **默认启用 + 搜索覆盖**：默认 `dropout_rate=0.5`，超参数搜索空间包含 `module__dropout_rate`。搜索过就用搜索结果，否则用配置默认值。

@@ -238,3 +238,23 @@
 ### Configuration / 配置
 
 - `TorchvisionTransferConfig` 默认值: batch=64, lr=0.01, epochs=30, ImageNet 归一化, 224x224 输入
+
+---
+
+## 2026-05-24: Q3 ResNet-18 Dropout 正则化
+
+### Added / 新增
+
+- `src/Q3/model.py`: `ResNet18` 新增 `dropout_rate` 参数（默认 0.5），在 `AdaptiveAvgPool2d` 后、FC 前插入 `nn.Dropout`。`rate=0` 时等同于无 Dropout。
+- `src/Q3/config.py`: `TrainConfig` 新增 `dropout_rate: float = 0.5` 字段
+- `src/Q3/main.py`: 新增 `--dropout` CLI 参数，所有 `create_model` 调用均传递 `dropout_rate`
+- `src/Q3/search.py`: `module__dropout_rate` 加入 `PARAM_MAP`（→ `dropout_rate`）+ 搜索空间
+  - 随机搜索: `uniform(0.0, 0.5)`
+  - 网格搜索: `[0.0, 0.1, 0.3, 0.5]`
+- `src/Q3/tests/test_model.py`: 新增 5 项 Dropout 测试（默认行为、指定比率、训练模式随机性、模块存在性、参数量不变）
+
+### Behavior Change / 行为变更
+
+- 训练默认启用 Dropout（rate=0.5）；可通过 `--dropout 0` 禁用
+- 超参数搜索自动探索 dropout_rate，搜索结果会覆盖默认值
+- 迁移学习不受影响（`ResNet18` 默认 `dropout_rate=0`，预训练权重加载不涉及 Dropout 参数）

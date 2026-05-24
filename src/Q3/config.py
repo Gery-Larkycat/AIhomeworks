@@ -103,10 +103,13 @@ class TrainConfig:
 
     # -- Model / 模型配置 --
     num_classes: int = 100  # CIFAR-100 has 100 classes / CIFAR-100 有 100 个类别
+    dropout_rate: float = (
+        0.5  # Dropout after global avg pool; 0 = disabled / 全局池化后 Dropout；0 = 禁用
+    )
 
     # -- Training / 训练超参数 --
     batch_size: int = 1024
-    epochs: int = 200
+    epochs: int = 150
     learning_rate: float = 0.1
     momentum: float = 0.9
     weight_decay: float = 5e-4
@@ -124,7 +127,7 @@ class TrainConfig:
     )
 
     # -- Scheduler / 学习率调度 --
-    scheduler_t_max: int = 125  # Cosine annealing period / 余弦退火周期
+    scheduler_t_max: int = 150  # Cosine annealing period / 余弦退火周期
 
     # -- Data loading / 数据加载 --
     num_workers: int = (
@@ -222,7 +225,7 @@ class TransferConfig:
     optimizer_type: str = "sgd"
     scheduler_type: str = "cosine"
     use_amp: bool = False
-    patience: int = 5
+    patience: int = 8
     min_delta: float = 1e-4
     scheduler_t_max: int = 30
 
@@ -276,7 +279,7 @@ class TorchvisionTransferConfig:
     scheduler_type: str = "cosine"
     scheduler_t_max: int = 30
     use_amp: bool = False
-    patience: int = 5
+    patience: int = 8
     min_delta: float = 1e-4
 
     # -- Data loading / 数据加载 --

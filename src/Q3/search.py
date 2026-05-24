@@ -52,6 +52,7 @@ PARAM_MAP: dict[str, str] = {
     "optimizer__momentum": "momentum",
     "optimizer__weight_decay": "weight_decay",
     "batch_size": "batch_size",
+    "module__dropout_rate": "dropout_rate",
 }
 
 
@@ -116,6 +117,7 @@ def _create_search_net(
     return NeuralNetClassifier(
         ResNet18,
         module__num_classes=config.num_classes,
+        module__dropout_rate=config.dropout_rate,
         criterion=nn.CrossEntropyLoss,
         optimizer=torch.optim.SGD,
         lr=0.1,
@@ -150,6 +152,7 @@ def _build_param_distributions(
         "optimizer__momentum": uniform(0.85, 0.14),  # [0.85, 0.99]
         "optimizer__weight_decay": loguniform(1e-6, 1e-2),
         "batch_size": list(search_cfg.batch_size_choices),
+        "module__dropout_rate": uniform(0.0, 0.5),  # [0.0, 0.5]
     }
 
 
@@ -167,6 +170,7 @@ def _build_param_grid(search_cfg: SearchConfig) -> dict:
         "optimizer__momentum": np.linspace(0.85, 0.99, 4).tolist(),
         "optimizer__weight_decay": np.logspace(-6, -2, 4).tolist(),
         "batch_size": list(search_cfg.batch_size_choices),
+        "module__dropout_rate": [0.0, 0.1, 0.3, 0.5],
     }
 
 
