@@ -38,3 +38,10 @@
 - **frozen dataclass 的时间戳注入**：`TrainConfig` / `TransferConfig` 是 frozen dataclass，不能在构造后修改 `checkpoint_dir`。必须在 `main.py` 构造前生成时间戳，通过 `dataclasses.replace()` 注入。
 - **自动选基础模型按准确率而非最新**：迁移学习选源模型时，应比较各运行的 `accuracy` 字段（存在检查点中），而非简单选最新的。同准确率时才按时间戳取最新。
 - **数据集感知文件名**：同一时间戳目录内，CIFAR-100 和 CIFAR-10 的检查点通过 `dataset_prefix(num_classes)` 生成不同前缀（`resnet18_cifar100_*` vs `resnet18_cifar10_*`），避免混淆。
+
+## Torchvision Pretrained Transfer / PyTorch 预训练迁移学习
+
+- **torchvision ResNet-18 输入 224x224**：官方预训练模型的 stem 是 7x7 conv stride=2 + maxpool，设计用于 224x224 输入。CIFAR-10 的 32x32 图像需要通过 `Resize(224)` 上采样，这增加了计算量但保留了预训练特征的完整空间结构。
+- **ImageNet 归一化必须匹配**：使用 torchvision 预训练模型时，必须用 ImageNet 的归一化统计量（mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]），而非 CIFAR-10 的统计量。否则预训练特征无法正确激活。
+- **FC 参数少（5,130）**：torchvision ResNet-18 的 FC 是 Linear(512, 10)，冻结 backbone 后仅 5,130 可训练参数。相比 CIFAR-100 自训练迁移（52,310 参数），训练更快但对数据量要求更低。
+- **`train()` 函数通用性**：已有的 `train()` 函数完全不感知模型来源，只通过 `requires_grad` 过滤可训练参数，因此 torchvision 模型可以直接复用同一训练循环、检查点保存、早停逻辑。

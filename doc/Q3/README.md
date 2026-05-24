@@ -15,33 +15,35 @@
 
 ## 1. 项目概览
 
-本实现从零构建 ResNet-18 网络，在 CIFAR-100（100 类，32×32 彩色图像）上进行训练和评估，并支持通过迁移学习微调到 CIFAR-10（加载完整模型 → 冻结 backbone → 仅训练 FC 层）。每次训练运行自动隔离到时间戳目录，迁移学习自动选择准确率最高的基础模型。
+本实现从零构建 ResNet-18 网络，在 CIFAR-100（100 类，32×32 彩色图像）上进行训练和评估，并支持两种迁移学习方式微调到 CIFAR-10：（1）CIFAR-100 自训练模型迁移（`--transfer`）；（2）PyTorch torchvision 官方 ImageNet 预训练模型迁移（`--tv-transfer`）。每次训练运行自动隔离到时间戳目录，迁移学习自动选择准确率最高的基础模型。
 
 **文件结构**：
 
 ```
 src/Q3/
-├── config.py         # 训练配置 + 搜索配置 + 迁移配置 + 辅助函数
-├── model.py          # 从零实现的 ResNet-18
-├── data.py           # CIFAR-100/10 数据加载（委托 augment.py 构建变换管线）
-├── augment.py        # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
-├── train.py          # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
-├── evaluate.py       # 评估指标
-├── search.py         # CIFAR-100 超参数搜索（skorch + sklearn）
-├── transfer.py       # 迁移学习：模型加载、冻结、CIFAR-10 搜索 + 训练
-├── checkpoint.py     # 检查点管理与特征提取器导出
-├── visualize.py      # 可视化（训练曲线、混淆矩阵）
-├── main.py           # 主入口（含 --transfer / --search / --amp 等）
-├── scripts/          # 探索性分析脚本
+├── config.py                # 训练配置 + 搜索配置 + 迁移配置 + 辅助函数
+├── model.py                 # 从零实现的 ResNet-18
+├── data.py                  # CIFAR-100/10 数据加载（委托 augment.py 构建变换管线）
+├── augment.py               # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
+├── train.py                 # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
+├── evaluate.py              # 评估指标
+├── search.py                # CIFAR-100 超参数搜索（skorch + sklearn）
+├── transfer.py              # CIFAR-100 自训练模型迁移学习
+├── torchvision_transfer.py  # PyTorch 预训练模型迁移学习（ImageNet → CIFAR-10）
+├── checkpoint.py            # 检查点管理与特征提取器导出
+├── visualize.py             # 可视化（训练曲线、混淆矩阵）
+├── main.py                  # 主入口（含 --transfer / --tv-transfer / --search / --amp 等）
+├── scripts/                 # 探索性分析脚本
 │   └── analyze_class_distribution.py  # 类别分布分析
 └── tests/
-    ├── test_model.py      # 模型验证
-    ├── test_data.py       # 数据验证
-    ├── test_augment.py    # 增强验证（32 项测试）
-    ├── test_search.py     # 搜索验证
-    ├── test_transfer.py   # 迁移学习验证（31 项测试）
-    ├── test_run_dirs.py   # 运行隔离验证（15 项测试）
-    └── test_perf.py       # GPU 性能基准测试
+    ├── test_model.py                # 模型验证
+    ├── test_data.py                 # 数据验证
+    ├── test_augment.py              # 增强验证（32 项测试）
+    ├── test_search.py               # 搜索验证
+    ├── test_transfer.py             # CIFAR-100 迁移学习验证（31 项测试）
+    ├── test_torchvision_transfer.py # torchvision 迁移学习验证（26 项测试）
+    ├── test_run_dirs.py             # 运行隔离验证（15 项测试）
+    └── test_perf.py                 # GPU 性能基准测试
 ```
 
 **设计原则**：每个文件单一职责（SRP），模块间通过 `TrainConfig` dataclass 和函数参数传递依赖，避免全局状态。
@@ -217,6 +219,20 @@ src/Q3/
 
 `frozen=True` 保证训练过程中配置不被意外修改。搜索固定使用 SGD（ResNet-18 标准优化器）。
 
+**TorchvisionTransferConfig** — PyTorch 预训练 ResNet-18 → CIFAR-10 迁移学习配置：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `image_size` | `224` | torchvision ResNet-18 标准输入尺寸 |
+| `num_classes` | `10` | CIFAR-10 |
+| `mean` / `std` | ImageNet 统计量 | `(0.485, 0.456, 0.406)` / `(0.229, 0.224, 0.225)` |
+| `batch_size` | `64` | 224x224 图像显存占用高，需较小 batch |
+| `epochs` | `30` | FC-only 训练轮数 |
+| `learning_rate` | `0.01` | 较低学习率，避免破坏预训练特征 |
+| `weight_decay` | `1e-4` | 比全量训练小 |
+| `label_smoothing` | `0.0` | 迁移学习样本少，避免过度正则化 |
+| `checkpoint_dir` | `"checkpoints"` | 运行时覆盖为时间戳子目录 |
+
 ### 3.2 `model.py` — 网络模型
 
 核心类和函数：
@@ -242,6 +258,21 @@ src/Q3/
 **`get_cifar10_loaders(config)`**：返回 CIFAR-10 的 `(train_loader, test_loader)`。与 `get_cifar100_loaders` 结构一致，区别是使用 `datasets.CIFAR10` 和 config 中的 CIFAR-10 归一化统计量。函数签名接受 `TransferConfig | TrainConfig`（鸭子类型）。
 
 超参数搜索的数据准备由 `search.py` / `transfer.py` 的 `_prepare_search_data()` / `_prepare_cifar10_data()` 处理（转为 numpy 数组，仅 Normalize），不经过此模块。
+
+### 3.3.1 `torchvision_transfer.py` — PyTorch 预训练模型迁移学习
+
+加载 torchvision 官方 ImageNet 预训练 ResNet-18，替换 FC 为 CIFAR-10 分类（10 类），冻结 backbone，仅训练 FC 层。CLI 通过 `--tv-transfer` 触发。
+
+核心函数：
+
+- **`load_torchvision_pretrained(target_num_classes=10)`**：加载 `resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)`，替换 `model.fc = nn.Linear(512, target_num_classes)`
+- **`freeze_backbone_tv(model)`**：冻结除 FC 外所有参数（与 `freeze_backbone` 逻辑一致，torchvision ResNet-18 的 FC 属性名也是 `fc`）
+- **`_build_tv_transforms(image_size, mean, std, augment)`**：构建 224x224 变换管线（Resize + ImageNet 归一化 + 可选 HFlip/Crop/ColorJitter）
+- **`get_cifar10_224_loaders(config, augment=False)`**：CIFAR-10 数据加载，将 32x32 上采样到 224x224，使用 ImageNet 归一化
+- **`_to_train_config(tv_config)`**：TorchvisionTransferConfig → TrainConfig 字段映射
+- **`run_torchvision_transfer(config)`**：主流程（加载预训练 → 冻结 → 训练 FC → 保存）
+
+冻结后仅 FC 层可训练，共 5,130 参数（`Linear(512, 10)`）。复用 `train.py` 的通用训练循环（`create_optimizer` 自动按 `requires_grad` 过滤参数）。
 
 ### 3.4 `train.py` — 训练循环
 
@@ -553,9 +584,45 @@ return TrainConfig(**overrides)
 
 训练过程中仍自动保存特征提取器权重（供其他迁移方案使用），但本项目的迁移学习流程使用完整模型加载方案。
 
----
+### 6.8 方式二：PyTorch 预训练模型迁移学习（`--tv-transfer`）
 
-## 7. 超参数搜索
+使用 torchvision 官方 ImageNet 预训练 ResNet-18 作为基础模型，替换 FC 层为 CIFAR-10 分类（10 类），冻结 backbone，仅训练 FC 层。
+
+核心实现在 `torchvision_transfer.py`，CLI 通过 `--tv-transfer` 触发。
+
+**与方式一（CIFAR-100 自训练迁移）的区别**：
+
+| 对比项 | 方式一（`--transfer`） | 方式二（`--tv-transfer`） |
+|---|---|---|
+| 预训练来源 | CIFAR-100 自训练模型 | torchvision ImageNet 预训练 |
+| 输入尺寸 | 32×32（CIFAR 原始） | 224×224（上采样） |
+| 归一化 | CIFAR-10 统计量 | ImageNet 统计量 |
+| FC 结构 | Sequential(原FC 512→100, 新层 100→10) | 直接替换 Linear(512, 10) |
+| 可训练参数 | 52,310 | 5,130 |
+| 需要先训练 CIFAR-100 | 是（自动选最优） | 否（权重来自 torchvision） |
+| 模型架构 | 自定义 CIFAR 适配 stem | torchvision 标准 stem |
+
+**模型准备**：
+
+1. `load_torchvision_pretrained(10)`：加载 `resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)`，替换 FC
+2. `freeze_backbone_tv(model)`：冻结除 FC 外所有参数（5,130 可训练参数）
+3. 使用 ImageNet 归一化的 224×224 数据加载器
+
+**完整流程**：
+
+```
+--tv-transfer → 生成时间戳目录
+  → load_torchvision_pretrained() → freeze_backbone_tv()
+  → get_cifar10_224_loaders() → train() (仅 FC)
+  → 保存检查点 + 训练历史
+  → 最终评估 + 可视化
+```
+
+**数据变换**（`_build_tv_transforms`）：
+
+- Train（无增强）：Resize(224) → ToTensor → Normalize(ImageNet)
+- Train（含增强）：Resize(224) → HFlip → Crop → ColorJitter → ToTensor → Normalize(ImageNet)
+- Test：Resize(224) → ToTensor → Normalize(ImageNet)
 
 使用 **skorch** 将 ResNet-18 包装为 sklearn 兼容估计器，然后用 **sklearn.model_selection** 的搜索工具做超参数搜索。sklearn 的搜索框架自带交叉验证、successive halving、标准评分指标，避免手写 fitness 函数的各种陷阱。
 
@@ -729,6 +796,19 @@ uv run python src/Q3/main.py --transfer --search
 uv run python src/Q3/main.py --transfer --search-only
 ```
 
+### PyTorch 预训练模型迁移学习（ImageNet → CIFAR-10）
+
+```bash
+# 使用 torchvision ImageNet 预训练 ResNet-18 迁移到 CIFAR-10
+uv run python src/Q3/main.py --tv-transfer
+
+# 自定义参数
+uv run python src/Q3/main.py --tv-transfer --epochs 50 --batch-size 32
+
+# 启用 AMP 加速（推荐，224x224 输入计算量大）
+uv run python src/Q3/main.py --tv-transfer --amp
+```
+
 ### 运行测试
 
 ```bash
@@ -753,15 +833,24 @@ checkpoints/
 │       ├── confusion_matrix.png                # 混淆矩阵
 │       └── lr_schedule.png                     # 学习率曲线
 │
-└── 2026-05-24_160000/                          # CIFAR-10 迁移学习运行
+├── 2026-05-24_160000/                          # CIFAR-100→CIFAR-10 迁移运行
+│   ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
+│   ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
+│   ├── training_history.json                   # 训练历史
+│   ├── transfer_hp_search_results.json         # 迁移搜索结果（如有）
+│   └── plots/
+│       ├── training_curves.png
+│       ├── confusion_matrix.png
+│       └── lr_schedule.png
+│
+└── 2026-05-24_180000/                          # torchvision 预训练迁移运行
     ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
     ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
     ├── training_history.json                   # 训练历史
-    ├── transfer_hp_search_results.json         # 迁移搜索结果（如有）
     └── plots/
         ├── training_curves.png
         ├── confusion_matrix.png
         └── lr_schedule.png
 ```
 
-不同运行互不覆盖。`--transfer` 自动从所有运行中选 CIFAR-100 准确率最高的模型作为基础模型。
+不同运行互不覆盖。`--transfer` 自动从所有运行中选 CIFAR-100 准确率最高的模型作为基础模型。`--tv-transfer` 直接使用 torchvision 官方预训练权重，无需先训练 CIFAR-100。

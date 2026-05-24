@@ -136,6 +136,13 @@ def parse_args() -> argparse.Namespace:
             " / 覆盖迁移学习源检查点路径"
         ),
     )
+    parser.add_argument(
+        "--tv-transfer", action="store_true",
+        help=(
+            "Transfer learn using PyTorch pretrained ResNet-18"
+            " / 使用 PyTorch 预训练模型迁移学习"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -163,6 +170,128 @@ def build_config(
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
     return TrainConfig(**overrides)
+
+
+def _run_torchvision_transfer(
+    args: argparse.Namespace,
+) -> None:
+    """
+    PyTorch 预训练 ResNet-18 迁移学习入口。
+    加载 torchvision ImageNet 预训练权重 → 冻结 backbone → 训练 FC。
+    """
+    import dataclasses
+
+    from src.Q3.config import (
+        TorchvisionTransferConfig,
+        generate_timestamp,
+        make_run_dir,
+        dataset_prefix,
+    )
+    from src.Q3.torchvision_transfer import (
+        load_torchvision_pretrained,
+        freeze_backbone_tv,
+        get_cifar10_224_loaders,
+        run_torchvision_transfer,
+    )
+    from src.Q3.evaluate import (
+        evaluate,
+        per_class_accuracy,
+        confusion_matrix,
+    )
+    from src.Q3.visualize import (
+        plot_training_curves,
+        plot_confusion_matrix,
+        plot_lr_schedule,
+    )
+    from src.Q3.checkpoint import load_full_checkpoint
+
+    # 时间戳运行目录 / Timestamped run dir
+    timestamp = generate_timestamp()
+    run_dir = make_run_dir(timestamp=timestamp)
+    print(f"Run directory: {run_dir}")
+
+    # 构建配置 / Build config
+    config = TorchvisionTransferConfig()
+    overrides: dict = {"checkpoint_dir": run_dir}
+
+    if args.epochs is not None:
+        overrides["epochs"] = args.epochs
+    if args.batch_size is not None:
+        overrides["batch_size"] = args.batch_size
+    if args.lr is not None:
+        overrides["learning_rate"] = args.lr
+    if args.amp:
+        overrides["use_amp"] = True
+    if args.no_augmentation:
+        from src.Q3.config import AugmentationConfig
+        overrides["augmentation"] = dataclasses.replace(
+            AugmentationConfig(), use_augmentation=False,
+        )
+    if args.data_root is not None:
+        overrides["data_root"] = Path(args.data_root)
+    if overrides:
+        config = dataclasses.replace(config, **overrides)
+
+    # 运行迁移学习 / Run transfer learning
+    history = run_torchvision_transfer(config)
+
+    # 最终评估 / Final evaluation
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+
+    # 重新加载最佳模型 / Reload best model
+    model = load_torchvision_pretrained(config.num_classes)
+    model = model.to(device)
+
+    prefix = dataset_prefix(config.num_classes)
+    best_path = run_dir / f"{prefix}_best.pth"
+    if best_path.exists():
+        load_full_checkpoint(best_path, model)
+        print(f"  Loaded best checkpoint: {best_path}")
+
+    _, test_loader = get_cifar10_224_loaders(
+        config, augment=False,
+    )
+    test_loss, test_acc = evaluate(model, test_loader, device)
+    print(
+        f"\nTest Loss: {test_loss:.4f}"
+        f" | Test Accuracy: {test_acc:.4f}"
+    )
+
+    # 每类准确率 / Per-class accuracy
+    class_acc = per_class_accuracy(
+        model, test_loader, device, config.num_classes
+    )
+    top5 = sorted(
+        class_acc.items(), key=lambda x: x[1], reverse=True
+    )[:5]
+    bottom5 = sorted(
+        class_acc.items(), key=lambda x: x[1]
+    )[:5]
+    print("Top 5 classes / 最高 5 类:")
+    for cls, acc in top5:
+        print(f"  Class {cls}: {acc:.4f}")
+    print("Bottom 5 classes / 最低 5 类:")
+    for cls, acc in bottom5:
+        print(f"  Class {cls}: {acc:.4f}")
+
+    # 混淆矩阵 / Confusion matrix
+    cm = confusion_matrix(
+        model, test_loader, device, config.num_classes
+    )
+
+    # 可视化 / Visualizations
+    vis_dir = run_dir / "plots"
+    plot_training_curves(history, vis_dir)
+    plot_confusion_matrix(cm, vis_dir)
+    plot_lr_schedule(history, vis_dir)
+    print(f"Plots saved to {vis_dir}")
+
+    print(
+        "\nTorchvision transfer learning done!"
+        " / PyTorch 预训练迁移学习完成！"
+    )
 
 
 def _run_transfer(args: argparse.Namespace) -> None:
@@ -332,6 +461,12 @@ def main() -> None:
     # ---- Transfer learning branch / 迁移学习分支 ----
     if args.transfer:
         _run_transfer(args)
+        return
+
+    # ---- Torchvision pretrained transfer branch ----
+    # ---- PyTorch 预训练模型迁移学习分支 ----
+    if args.tv_transfer:
+        _run_torchvision_transfer(args)
         return
 
     # ---- CIFAR-100 training branch / CIFAR-100 训练分支 ----

@@ -124,7 +124,7 @@ class TrainConfig:
     )
 
     # -- Scheduler / 学习率调度 --
-    scheduler_t_max: int = 200  # Cosine annealing period / 余弦退火周期
+    scheduler_t_max: int = 125  # Cosine annealing period / 余弦退火周期
 
     # -- Data loading / 数据加载 --
     num_workers: int = (
@@ -182,6 +182,13 @@ class SearchConfig:
 CIFAR10_MEAN: tuple[float, ...] = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD: tuple[float, ...] = (0.2470, 0.2435, 0.2616)
 
+# ---------------------------------------------------------------------------
+# ImageNet constants (torchvision pretrained model normalization) / ImageNet 常量
+# ---------------------------------------------------------------------------
+
+IMAGENET_MEAN: tuple[float, ...] = (0.485, 0.456, 0.406)
+IMAGENET_STD: tuple[float, ...] = (0.229, 0.224, 0.225)
+
 
 @dataclass(frozen=True)
 class TransferConfig:
@@ -235,6 +242,51 @@ class TransferConfig:
     num_trials: int = 30
     cv: int = 3
     batch_size_choices: tuple[int, ...] = (64, 128, 256)
+
+
+@dataclass(frozen=True)
+class TorchvisionTransferConfig:
+    """
+    PyTorch 预训练 ResNet-18 → CIFAR-10 迁移学习配置。
+    Torchvision pretrained ResNet-18 → CIFAR-10 transfer learning config.
+
+    加载 torchvision 官方 ImageNet 预训练权重 → 替换 FC 为 10 类
+    → 冻结 backbone → 仅训练 FC 层。
+
+    与 TransferConfig 的区别：使用 ImageNet 归一化统计量、224x224 输入尺寸
+    （torchvision ResNet-18 的标准输入），无需 source_checkpoint（权重来自 torchvision）。
+    """
+
+    # -- Image / 图像尺寸 --
+    image_size: int = 224  # torchvision ResNet-18 标准输入尺寸
+
+    # -- Target / 目标数据集 --
+    num_classes: int = 10  # CIFAR-10
+    mean: tuple[float, ...] = IMAGENET_MEAN
+    std: tuple[float, ...] = IMAGENET_STD
+
+    # -- Training / 训练参数 --
+    batch_size: int = 64  # 224x224 显存占用高，需要较小 batch
+    epochs: int = 30
+    learning_rate: float = 0.01
+    momentum: float = 0.9
+    weight_decay: float = 1e-4  # 比全量训练小，防止微调时过度约束预训练特征
+    label_smoothing: float = 0.0  # 迁移学习样本少，避免过度正则化
+    optimizer_type: str = "sgd"
+    scheduler_type: str = "cosine"
+    scheduler_t_max: int = 30
+    use_amp: bool = False
+    patience: int = 5
+    min_delta: float = 1e-4
+
+    # -- Data loading / 数据加载 --
+    num_workers: int = 0
+    pin_memory: bool = True
+    data_root: Path = Path("data")
+    checkpoint_dir: Path = Path("checkpoints")
+
+    # -- Augmentation / 数据增强 --
+    augmentation: AugmentationConfig = AugmentationConfig()
 
 
 # ---------------------------------------------------------------------------

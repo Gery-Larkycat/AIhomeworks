@@ -210,3 +210,31 @@
   - TestFreezeBackbone: 迁移模型可训练参数 = 52,310（原 FC 51,300 + 新分类层 1,010）
   - TestOptimizerFiltering: 新增 `test_optimizer_param_count_transfer`
   - TestPrintSummary: 使用迁移模型验证输出
+
+---
+
+## 2026-05-24: Q3 PyTorch 预训练 ResNet-18 迁移学习
+
+### Added / 新增
+
+- `src/Q3/torchvision_transfer.py`: **新建** — torchvision 预训练模型迁移学习
+  - `load_torchvision_pretrained()`: 加载 torchvision ImageNet 预训练 ResNet-18，替换 FC 为目标类别
+  - `freeze_backbone_tv()`: 冻结 backbone（仅 FC 可训练，5,130 参数）
+  - `_build_tv_transforms()`: 构建 224x224 变换管线（Resize + ImageNet 归一化，可选增强）
+  - `get_cifar10_224_loaders()`: CIFAR-10 数据加载（32x32 → 224x224 上采样）
+  - `_to_train_config()`: TorchvisionTransferConfig → TrainConfig 转换
+  - `run_torchvision_transfer()`: 迁移学习主流程（加载 → 冻结 → 训练 FC → 保存）
+- `src/Q3/config.py`: 新增 `IMAGENET_MEAN/STD` 常量 + `TorchvisionTransferConfig` 冻结 dataclass
+- `src/Q3/main.py`: `--tv-transfer` 命令行参数 + `_run_torchvision_transfer()` 入口
+- `src/Q3/tests/test_torchvision_transfer.py`: **新建** — 26 项测试
+  - TestLoadTorchvisionPretrained: FC 维度、backbone 权重加载、前向传播
+  - TestFreezeBackboneTv: requires_grad 验证、可训练参数计数（5,130）
+  - TestTorchvisionTransferConfig: 默认值、frozen 行为
+  - TestToTrainConfig: 配置转换
+  - TestOptimizerFilteringTv: 优化器参数过滤
+  - TestCIFAR10224Loaders: 224x224 数据 shape
+  - TestBuildTvTransforms: 变换管线验证
+
+### Configuration / 配置
+
+- `TorchvisionTransferConfig` 默认值: batch=64, lr=0.01, epochs=30, ImageNet 归一化, 224x224 输入
