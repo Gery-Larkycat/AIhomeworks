@@ -80,7 +80,7 @@ class ResNet18(nn.Module):
     头部：AdaptiveAvgPool2d → Linear(512, num_classes)
     """
 
-    def __init__(self, num_classes: int = 100) -> None:
+    def __init__(self, num_classes: int = 100, **kwargs) -> None:
         super().__init__()
         self.in_channels = 64
 
