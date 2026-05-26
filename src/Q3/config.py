@@ -109,7 +109,7 @@ class TrainConfig:
 
     # -- Training / 训练超参数 --
     batch_size: int = 1024
-    epochs: int = 150
+    epochs: int = 125
     learning_rate: float = 0.1
     momentum: float = 0.9
     weight_decay: float = 5e-4
@@ -127,7 +127,7 @@ class TrainConfig:
     )
 
     # -- Scheduler / 学习率调度 --
-    scheduler_t_max: int = 150  # Cosine annealing period / 余弦退火周期
+    scheduler_t_max: int = 125  # Cosine annealing period / 余弦退火周期
 
     # -- Data loading / 数据加载 --
     num_workers: int = (
@@ -217,7 +217,7 @@ class TransferConfig:
 
     # -- Training / 训练超参数 --
     batch_size: int = 256
-    epochs: int = 30
+    epochs: int = 50
     learning_rate: float = 0.01  # FC-only 训练用较低学习率
     momentum: float = 0.9
     weight_decay: float = 5e-4
@@ -270,7 +270,7 @@ class TorchvisionTransferConfig:
 
     # -- Training / 训练参数 --
     batch_size: int = 64  # 224x224 显存占用高，需要较小 batch
-    epochs: int = 30
+    epochs: int = 50
     learning_rate: float = 0.01
     momentum: float = 0.9
     weight_decay: float = 1e-4  # 比全量训练小，防止微调时过度约束预训练特征
