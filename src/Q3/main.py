@@ -2,8 +2,11 @@
 Main entry point for ResNet-18 CIFAR-100 training and evaluation.
 ResNet-18 CIFAR-100 训练和评估的主入口。
 
-Orchestrates: model creation → data loading → training → evaluation → visualization.
-编排：模型创建 → 数据加载 → 训练 → 评估 → 可视化。
+Orchestrates: data loading → training → evaluation → visualization.
+编排：数据加载 → 训练 → 评估 → 可视化。
+
+CIFAR-100 训练使用 Q2/training.train_resnet (skorch)，
+迁移学习分支使用 Q3/transfer.py 和 Q3/torchvision_transfer.py（保留旧式 train 循环）。
 
 Supports hyperparameter search via --search / --search-only (skorch + sklearn).
 通过 --search / --search-only 支持超参数搜索（skorch + sklearn）。
@@ -21,24 +24,33 @@ from pathlib import Path
 
 import torch
 
-# Add project root to path for imports
-# 将项目根目录添加到路径以便导入
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Add src/ to path for imports (Q2, utils packages)
+# 将 src/ 添加到路径以便导入 Q2、utils 包
+_src_dir = str(Path(__file__).resolve().parents[1])
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+# Also add project root for src.Q3 style imports
+# 同时添加项目根目录以支持 src.Q3 风格的导入
+_project_root = str(Path(__file__).resolve().parents[2])
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
-from src.Q3.checkpoint import save_training_history
-from src.Q3.config import TrainConfig
-from src.Q3.data import get_cifar100_loaders
-from src.Q3.evaluate import (
-    confusion_matrix,
-    evaluate,
-    per_class_accuracy,
+from src.Q3.config import TrainConfig  # noqa: E402
+from src.Q3.data import (  # noqa: E402
+    get_cifar100_datasets, get_cifar100_loaders,
 )
-from src.Q3.model import create_model, get_feature_extractor_state
-from src.Q3.train import train
-from src.Q3.visualize import (
-    plot_confusion_matrix,
+from src.Q3.search import run_search  # noqa: E402
+
+# 共享模块导入 / Shared module imports
+# noqa: E402 — sys.path.insert above makes these importable
+from Q2.model import get_feature_extractor_state  # noqa: E402
+from Q2.training import train_resnet  # noqa: E402
+from utils.evaluate import (  # noqa: E402
+    per_class_accuracy, confusion_matrix,
+)
+from utils.visualize import (  # noqa: E402
+    plot_training_curves, plot_confusion_matrix,
     plot_lr_schedule,
-    plot_training_curves,
 )
 
 
@@ -198,18 +210,13 @@ def _run_torchvision_transfer(
     )
     from src.Q3.torchvision_transfer import (
         load_torchvision_pretrained,
-        freeze_backbone_tv,
         get_cifar10_224_loaders,
         run_torchvision_transfer,
     )
-    from src.Q3.evaluate import (
-        evaluate,
-        per_class_accuracy,
-        confusion_matrix,
-    )
-    from src.Q3.visualize import (
-        plot_training_curves,
-        plot_confusion_matrix,
+    # 使用 utils 中的评估和可视化 / Use utils for eval & vis
+    from utils.evaluate import per_class_accuracy, confusion_matrix
+    from utils.visualize import (
+        plot_training_curves, plot_confusion_matrix,
         plot_lr_schedule,
     )
     from src.Q3.checkpoint import load_full_checkpoint
@@ -262,7 +269,26 @@ def _run_torchvision_transfer(
     _, test_loader = get_cifar10_224_loaders(
         config, augment=False,
     )
-    test_loss, test_acc = evaluate(model, test_loader, device)
+
+    # 使用 skorch 的 net 评估 / Evaluate using skorch's net
+    # 需要重构: evaluate() 已移除，改用 per_class_accuracy + confusion_matrix
+    # 使用 net.score() 获取 accuracy，或手动计算 loss/acc
+    # TODO: 恢复 evaluate() 或用 skorch 内置评分
+    # 暂时直接计算 loss/acc
+    criterion = torch.nn.CrossEntropyLoss()
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            total_loss += criterion(outputs, labels).item() * images.size(0)
+            total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+            total_samples += images.size(0)
+    test_loss = total_loss / total_samples
+    test_acc = total_correct / total_samples
     print(
         f"\nTest Loss: {test_loss:.4f}"
         f" | Test Accuracy: {test_acc:.4f}"
@@ -318,24 +344,19 @@ def _run_transfer(args: argparse.Namespace) -> None:
         dataset_prefix,
     )
     from src.Q3.data import get_cifar10_loaders
-    from src.Q3.evaluate import (
-        confusion_matrix,
-        evaluate,
-        per_class_accuracy,
+    # 使用 utils 中的评估和可视化 / Use utils for eval & vis
+    from utils.evaluate import per_class_accuracy, confusion_matrix
+    from utils.visualize import (
+        plot_training_curves, plot_confusion_matrix,
+        plot_lr_schedule,
     )
     from src.Q3.transfer import (
         find_best_cifar100_checkpoint,
         load_pretrained_model,
         freeze_backbone,
-        print_transfer_summary,
         run_transfer,
         run_transfer_search,
         _to_train_config,
-    )
-    from src.Q3.visualize import (
-        plot_confusion_matrix,
-        plot_lr_schedule,
-        plot_training_curves,
     )
 
     # 生成时间戳运行目录 / Generate timestamped run dir
@@ -425,7 +446,21 @@ def _run_transfer(args: argparse.Namespace) -> None:
         load_full_checkpoint(best_path, model)
         print(f"  Loaded best checkpoint: {best_path}")
 
-    test_loss, test_acc = evaluate(model, test_loader, device)
+    # 评估 / Evaluate (内联计算，因为 evaluate() 已移至 utils/evaluate 但不含 loss/acc)
+    criterion = torch.nn.CrossEntropyLoss()
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            total_loss += criterion(outputs, labels).item() * images.size(0)
+            total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+            total_samples += images.size(0)
+    test_loss = total_loss / total_samples
+    test_acc = total_correct / total_samples
     print(
         f"\nTest Loss: {test_loss:.4f}"
         f" | Test Accuracy: {test_acc:.4f}"
@@ -500,33 +535,20 @@ def main() -> None:
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     print()
 
-    # Create model / 创建模型
-    model = create_model(
-        num_classes=config.num_classes,
-        dropout_rate=config.dropout_rate,
-    )
-    num_params = sum(p.numel() for p in model.parameters())
-    print(
-        f"Model: ResNet-18"
-        f" | Parameters: {num_params:,}"
-        f" | Classes: {config.num_classes}"
-    )
-
-    # Load data / 加载数据
+    # 加载数据集（用于 skorch）/ Load datasets (for skorch)
     print(
         "\nLoading CIFAR-100 dataset"
         " / 加载 CIFAR-100 数据集..."
     )
-    train_loader, test_loader = get_cifar100_loaders(config)
+    train_ds, test_ds = get_cifar100_datasets(config)
     print(
-        f"Train: {len(train_loader.dataset)} samples"
-        f" | Test: {len(test_loader.dataset)} samples"
+        f"Train: {len(train_ds)} samples"
+        f" | Test: {len(test_ds)} samples"
     )
 
     # ---- Hyperparameter search / 超参数搜索 ----
     if args.search or args.search_only:
         from src.Q3.config import SearchConfig
-        from src.Q3.search import run_search
 
         # Build search config with strategy override
         # 根据命令行参数构建搜索配置
@@ -552,21 +574,15 @@ def main() -> None:
             config, **best_params
         )
         print(
-            f"\nUsing best params from search"
-            f" / 使用搜索得到的最佳配置:"
+            "\nUsing best params from search"
+            " / 使用搜索得到的最佳配置:"
         )
         for k, v in best_params.items():
             print(f"  {k}: {v}")
 
-        # batch_size may have changed → rebuild loaders & model
-        # batch_size 可能改变 → 重建 loader 和模型
-        train_loader, test_loader = get_cifar100_loaders(
-            config
-        )
-        model = create_model(
-            num_classes=config.num_classes,
-            dropout_rate=config.dropout_rate,
-        )
+        # batch_size may have changed → rebuild datasets
+        # batch_size 可能改变 → 重建数据集
+        train_ds, test_ds = get_cifar100_datasets(config)
     elif not args.ignore_search:
         # Auto-load existing search results if available
         # 自动加载已有搜索结果（如果存在）
@@ -585,25 +601,17 @@ def main() -> None:
                 print(f"  {k}: {v}")
             # Rebuild with new batch_size
             # 用新 batch_size 重建
-            train_loader, test_loader = (
-                get_cifar100_loaders(config)
-            )
-            model = create_model(
-                num_classes=config.num_classes,
-                dropout_rate=config.dropout_rate,
-            )
+            train_ds, test_ds = get_cifar100_datasets(config)
 
-    # Train / 训练
+    # Train using Q2 skorch pipeline / 使用 Q2 skorch 管线训练
     print(
         f"\nStarting training for {config.epochs} epochs"
         f" / 开始训练 {config.epochs} 轮..."
     )
-    history = train(
-        model, train_loader, test_loader, config
+    net, history = train_resnet(
+        config, train_ds, test_ds,
+        save_feature_extractor=True,
     )
-
-    # Save training history / 保存训练历史
-    save_training_history(history, config)
 
     # Final evaluation / 最终评估
     print("\n" + "=" * 60)
@@ -612,10 +620,28 @@ def main() -> None:
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
+    # skorch net.module_ 是训练后的 PyTorch 模型
+    model = net.module_
     model = model.to(device)
-    test_loss, test_acc = evaluate(
-        model, test_loader, device
-    )
+
+    # 使用 DataLoader 进行评估（需要 loader 而非 dataset）
+    _, test_loader = get_cifar100_loaders(config)
+
+    # 内联计算 test loss/acc / Inline test loss/acc computation
+    criterion = torch.nn.CrossEntropyLoss()
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            total_loss += criterion(outputs, labels).item() * images.size(0)
+            total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+            total_samples += images.size(0)
+    test_loss = total_loss / total_samples
+    test_acc = total_correct / total_samples
     print(
         f"Test Loss: {test_loss:.4f}"
         f" | Test Accuracy: {test_acc:.4f}"

@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.Q3.config import TrainConfig
 from src.Q3.data import get_cifar100_loaders
-from src.Q3.model import create_model
+from src.Q2.model import create_model
 from src.Q3.train import train_one_epoch
 
 
@@ -84,13 +84,13 @@ class TestOptimizationsActive:
         assert "scaler.scale(" in src
 
     def test_amp_autocast_in_evaluate(self):
-        from src.Q3.evaluate import evaluate
+        from utils.evaluate import evaluate
         src = inspect.getsource(evaluate)
         assert "autocast" in src
 
     def test_evaluate_accumulates_on_gpu(self):
         """evaluate should not call .item() inside the loop."""
-        from src.Q3.evaluate import evaluate
+        from utils.evaluate import evaluate
         src = inspect.getsource(evaluate)
         in_loop = False
         for line in src.splitlines():

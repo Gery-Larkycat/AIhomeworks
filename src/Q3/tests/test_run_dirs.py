@@ -20,7 +20,7 @@ from src.Q3.config import (
     make_run_dir,
     dataset_prefix,
 )
-from src.Q3.model import ResNet18
+from src.Q2.model import ResNet18
 
 
 # ---------------------------------------------------------------------------

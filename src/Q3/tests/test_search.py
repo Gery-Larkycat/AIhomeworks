@@ -25,7 +25,7 @@ from src.Q3.search import (
     _prepare_search_data,
     load_best_search_params,
 )
-from src.Q3.model import ResNet18
+from Q2.model import ResNet18
 
 
 # ---------------------------------------------------------------------------

@@ -14,9 +14,9 @@ from torch.optim import SGD, Adam, AdamW, NAdam, RMSprop, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, LRScheduler
 from torch.utils.data import DataLoader
 
-from .augment import apply_batch_augmentation
+from utils.augment import apply_batch_augmentation
+from utils.evaluate import evaluate
 from .config import AugmentationConfig, TrainConfig
-from .evaluate import evaluate
 
 
 def create_optimizer(

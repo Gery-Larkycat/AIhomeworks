@@ -16,7 +16,7 @@ import pytest
 import torch
 from PIL import Image
 
-from src.Q3.augment import (
+from utils.augment import (
     FogEffect,
     GaussianNoise,
     JPEGCompressionPIL,
@@ -29,7 +29,7 @@ from src.Q3.augment import (
     cutmix_data,
     mixup_data,
 )
-from src.Q3.config import AugmentationConfig, TrainConfig
+from src.Q3.config import AugmentationConfig, TrainConfig, CIFAR100_MEAN, CIFAR100_STD
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +314,8 @@ class TestBuildTrainTransforms:
 
     def test_full_pipeline_produces_tensor(self, train_config):
         transform = build_train_transforms(
-            train_config.augmentation, train_config
+            train_config.augmentation,
+            train_config.mean, train_config.std,
         )
         img = Image.fromarray(
             torch.randint(0, 256, (32, 32, 3), dtype=torch.uint8).numpy()
@@ -325,7 +326,9 @@ class TestBuildTrainTransforms:
 
     def test_no_augmentation_pipeline(self, train_config):
         aug = AugmentationConfig(use_augmentation=False)
-        transform = build_train_transforms(aug, train_config)
+        transform = build_train_transforms(
+            aug, train_config.mean, train_config.std,
+        )
         img = Image.fromarray(
             torch.randint(0, 256, (32, 32, 3), dtype=torch.uint8).numpy()
         )
@@ -338,7 +341,9 @@ class TestBuildTrainTransforms:
         aug = AugmentationConfig(
             use_augmentation=False,
         )
-        transform = build_train_transforms(aug, train_config)
+        transform = build_train_transforms(
+            aug, train_config.mean, train_config.std,
+        )
         img = Image.fromarray(
             torch.randint(0, 256, (32, 32, 3), dtype=torch.uint8).numpy()
         )
@@ -352,7 +357,9 @@ class TestBuildTestTransforms:
     """build_test_transforms tests."""
 
     def test_produces_normalized_tensor(self, train_config):
-        transform = build_test_transforms(train_config)
+        transform = build_test_transforms(
+            train_config.mean, train_config.std,
+        )
         img = Image.fromarray(
             torch.randint(0, 256, (32, 32, 3), dtype=torch.uint8).numpy()
         )
@@ -362,7 +369,9 @@ class TestBuildTestTransforms:
 
     def test_no_augmentation_in_test(self, train_config):
         """Test pipeline should be deterministic for same input."""
-        transform = build_test_transforms(train_config)
+        transform = build_test_transforms(
+            train_config.mean, train_config.std,
+        )
         img = Image.fromarray(
             torch.randint(0, 256, (32, 32, 3), dtype=torch.uint8).numpy()
         )

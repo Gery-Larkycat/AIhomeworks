@@ -51,3 +51,20 @@
 - **Dropout 位置选择**：放在 `AdaptiveAvgPool2d` 之后、FC 之前是 ResNet 的标准做法。不在 BasicBlock 内部加 Dropout，因为残差连接 + BN 已提供足够正则化，Block 内 Dropout 反而可能破坏 shortcut 的信息流。
 - **Dropout 不增加参数量**：`nn.Dropout` 没有可学习参数，不影响 `state_dict` 结构，也不会影响预训练权重加载（迁移学习无需调整）。
 - **默认启用 + 搜索覆盖**：默认 `dropout_rate=0.5`，超参数搜索空间包含 `module__dropout_rate`。搜索过就用搜索结果，否则用配置默认值。
+
+## skorch 训练包装 / skorch Training Wrapper
+
+- **skorch 替代手写训练循环**：`ClassifierNet(NeuralNetClassifier)` 替代了手写 `train()` 函数。skorch 自动提供 epoch 计时（`history['dur']`）、train/valid loss/acc、early stopping、checkpoint。不再需要手动管理 epoch 循环和指标累积。
+- **CutMix/Mixup 通过覆写 `train_step_single()` 实现**：在 `train_step_single()` 中对 batch 应用批次级增强，soft labels 由 `CrossEntropyLoss` 原生支持。不需要修改 skorch 的整体训练流程。
+- **测试集作为验证集**：skorch 默认用 `train_split` 划分训练数据。我们用 `make_fixed_split(test_dataset)` 闭包，将独立的测试集作为验证集传给 skorch，保持与原有一致的 train/test 分离。
+- **skorch 的 `EarlyStopping` 通过 `KeyboardInterrupt` 终止训练**：`fit_loop` 捕获该异常并优雅退出。设置 `load_best=True` 确保训练结束后模型是最优权重。
+- **自定义 Callback 替代 skorch 内置 Checkpoint**：skorch 的 `Checkpoint` 不保存 accuracy/epoch/num_classes 元数据，迁移学习需要这些字段。用 `CustomCheckpoint` 回调保存自定义格式。
+- **Label smoothing + CutMix/Mixup 互斥**：在 `create_classifier_net()` 工厂中检测批次增强是否激活，激活时自动将 `label_smoothing` 设为 0。
+
+## 代码提取与包组织 / Code Extraction & Package Organization
+
+- **三层架构：utils → Q2 → Q3**：`utils/` 存放跨作业共享基础设施，`Q2/` 存放 ResNet-18 训练管线，`Q3/` 仅保留 CIFAR-100 特有配置和迁移学习代码。Q1（VGG-16）只引用 utils。
+- **`build_train_transforms` 签名解耦**：从 `(aug_config, config)` 改为 `(aug_config, mean, std)`，消除对 `TrainConfig` 的依赖，不同作业可以传入不同的归一化统计量。
+- **搜索模块分离数据准备和搜索逻辑**：`utils/search.run_search()` 接受预处理好的 numpy 数组，不关心数据来源。每个作业只需准备自己的数据然后调用通用搜索。
+- **`train.py` 保留给迁移学习**：迁移学习的训练流程（加载预训练权重→冻结 backbone→仅训练 FC）与标准训练不同，暂时保留旧的 `train()` 函数。后续可统一为 skorch 管线。
+- **pytest `pythonpath = ["src"]`**：将 `src/` 加入 Python 路径后，`Q2` 和 `utils` 可以直接 import，不再依赖 `sys.path.insert()`。

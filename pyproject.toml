@@ -19,3 +19,8 @@ dependencies = [
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
+
+# pytest 配置：将 src/ 添加到 Python 路径，
+# 使 Q2、Q3、utils 包可直接导入（如 from utils.config import ...）
+[tool.pytest.ini_options]
+pythonpath = ["src"]

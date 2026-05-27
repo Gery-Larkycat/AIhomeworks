@@ -1,9 +1,12 @@
 """
-Evaluation metrics for ResNet-18 on CIFAR-100.
-ResNet-18 在 CIFAR-100 上的评估指标。
+Evaluation metrics: loss/accuracy, per-class accuracy and confusion matrix.
+评估指标：损失/准确率、每类准确率和混淆矩阵。
 
-Provides top-1 accuracy, per-class accuracy, and confusion matrix.
-提供 top-1 准确率、每类准确率和混淆矩阵。
+Top-1 accuracy and loss evaluation is handled by skorch's built-in scoring
+for the skorch pipeline. evaluate() is kept for legacy training loops
+(train.py) that still use manual training.
+skorch 管线的 top-1 准确率和损失评估由内置评分处理。
+evaluate() 保留给仍使用手写训练循环（train.py）的旧代码。
 """
 
 import torch
@@ -19,11 +22,20 @@ def evaluate(
     use_amp: bool = False,
 ) -> tuple[float, float]:
     """
-    Evaluate model, returning (loss, accuracy).
     评估模型，返回 (损失, 准确率)。
+    Evaluate model, returning (loss, accuracy).
 
-    Accumulates as GPU tensors to avoid per-batch sync.
     以 GPU 张量累积，避免每 batch 同步。
+    Accumulates as GPU tensors to avoid per-batch sync.
+
+    Args:
+        model:  PyTorch 模型
+        loader: DataLoader
+        device: 计算设备
+        use_amp: 是否启用混合精度 / whether to use mixed precision
+
+    Returns:
+        (avg_loss, accuracy)
     """
     criterion = nn.CrossEntropyLoss()
     model.eval()

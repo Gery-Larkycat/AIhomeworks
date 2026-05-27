@@ -20,33 +20,45 @@
 **文件结构**：
 
 ```
-src/Q3/
-├── config.py                # 训练配置 + 搜索配置 + 迁移配置 + 辅助函数
-├── model.py                 # 从零实现的 ResNet-18
-├── data.py                  # CIFAR-100/10 数据加载（委托 augment.py 构建变换管线）
-├── augment.py               # 数据增强（19 种技术，5 大类 + CutMix/Mixup）
-├── train.py                 # 训练循环 + 优化器/调度器工厂函数 + batch 级增强
-├── evaluate.py              # 评估指标
-├── search.py                # CIFAR-100 超参数搜索（skorch + sklearn）
-├── transfer.py              # CIFAR-100 自训练模型迁移学习
-├── torchvision_transfer.py  # PyTorch 预训练模型迁移学习（ImageNet → CIFAR-10）
-├── checkpoint.py            # 检查点管理与特征提取器导出
-├── visualize.py             # 可视化（训练曲线、混淆矩阵）
-├── main.py                  # 主入口（含 --transfer / --tv-transfer / --search / --amp 等）
-├── scripts/                 # 探索性分析脚本
-│   └── analyze_class_distribution.py  # 类别分布分析
-└── tests/
-    ├── test_model.py                # 模型验证
-    ├── test_data.py                 # 数据验证
-    ├── test_augment.py              # 增强验证（32 项测试）
-    ├── test_search.py               # 搜索验证
-    ├── test_transfer.py             # CIFAR-100 迁移学习验证（31 项测试）
-    ├── test_torchvision_transfer.py # torchvision 迁移学习验证（26 项测试）
-    ├── test_run_dirs.py             # 运行隔离验证（15 项测试）
-    └── test_perf.py                 # GPU 性能基准测试
+src/
+├── utils/                          # 跨作业共享基础设施
+│   ├── config.py                   # AugmentationConfig, SearchConfig, 常量, 辅助函数
+│   ├── augment.py                  # 19 种增强技术 + pipeline builders
+│   ├── net.py                      # ClassifierNet(NeuralNetClassifier) skorch 训练器
+│   ├── callbacks.py                # 自定义 skorch 回调（检查点、特征提取器、计时等）
+│   ├── evaluate.py                 # evaluate, per_class_accuracy, confusion_matrix
+│   ├── visualize.py                # 训练曲线、混淆矩阵、学习率图
+│   └── search.py                   # 通用超参搜索（skorch + sklearn）
+├── Q2/                             # ResNet-18 训练管线（Q3 引用此）
+│   ├── model.py                    # ResNet-18 模型（BasicBlock + ResNet18）
+│   ├── config.py                   # Q2TrainConfig（CIFAR-10 默认值）
+│   ├── data.py                     # CIFAR-10 数据加载
+│   ├── training.py                 # train_resnet() — skorch 训练管线
+│   ├── search.py                   # Q2 超参搜索
+│   └── tests/
+└── Q3/                             # CIFAR-100 + 迁移学习
+    ├── config.py                   # Q3TrainConfig, TransferConfig, TorchvisionTransferConfig
+    ├── data.py                     # CIFAR-100/10 数据加载
+    ├── train.py                    # 旧训练循环（迁移学习兼容）
+    ├── search.py                   # CIFAR-100 超参搜索（委托 utils.search）
+    ├── checkpoint.py               # 检查点管理（迁移学习兼容）
+    ├── transfer.py                 # CIFAR-100 自训练模型迁移学习
+    ├── torchvision_transfer.py     # PyTorch 预训练模型迁移学习
+    ├── main.py                     # 主入口（CIFAR-100 训练用 skorch 管线）
+    ├── scripts/
+    │   └── analyze_class_distribution.py
+    └── tests/
+        ├── test_model.py
+        ├── test_data.py
+        ├── test_augment.py
+        ├── test_search.py
+        ├── test_transfer.py
+        ├── test_torchvision_transfer.py
+        ├── test_run_dirs.py
+        └── test_perf.py
 ```
 
-**设计原则**：每个文件单一职责（SRP），模块间通过 `TrainConfig` dataclass 和函数参数传递依赖，避免全局状态。
+**设计原则**：三层架构 — `utils/`（跨作业共享）→ `Q2/`（ResNet-18 训练管线）→ `Q3/`（CIFAR-100 + 迁移学习）。Q1（VGG-16）只引用 utils。CIFAR-100 训练通过 `Q2.training.train_resnet()` 调用 skorch 管线，自动记录每轮训练耗时（`history['dur']`）。
 
 ---
 
@@ -150,9 +162,9 @@ src/Q3/
 
 ## 3. 模块详解
 
-### 3.1 `config.py` — 训练配置、搜索配置、迁移配置与辅助函数
+### 3.1 `config.py` — Q3 训练配置、迁移配置
 
-使用 `@dataclass(frozen=True)` 定义不可变配置对象，所有超参数集中管理：
+使用 `@dataclass(frozen=True)` 定义不可变配置对象。共享类型（`AugmentationConfig`, `SearchConfig`, 常量, 辅助函数）从 `utils.config` 导入并 re-export。
 
 **TrainConfig** — CIFAR-100 训练配置：
 
@@ -236,31 +248,33 @@ src/Q3/
 | `label_smoothing` | `0.0` | 迁移学习样本少，避免过度正则化 |
 | `checkpoint_dir` | `"checkpoints"` | 运行时覆盖为时间戳子目录 |
 
-### 3.2 `model.py` — 网络模型
+### 3.2 `Q2/model.py` — 网络模型（从 Q3 移入）
+
+ResNet-18 模型定义已移至 `src/Q2/model.py`，Q2 和 Q3 共享同一模型。
 
 核心类和函数：
 
 - **`BasicBlock(nn.Module)`**：标准残差块。第一个 conv 接受 `stride` 参数用于下采样，第二个 conv 始终 stride=1。`expansion=1`（ResNet-18 不使用 bottleneck）。
 - **`ResNet18(nn.Module)`**：
-  - `__init__`：构建 stem → 4 层残差组 → 分类头。`dropout_rate` 参数控制 FC 前的 Dropout（默认 0.5，设 0 禁用）。`_make_layer` 递增 `self.in_channels` 供下一层使用。
-  - `_make_layer(out_channels, num_blocks, stride)`：构建一组 BasicBlock。第一个块使用传入的 stride（可能下采样），后续块 stride=1。
-  - `_initialize_weights()`：Kaiming 初始化卷积，常数初始化 BN。
+  - `__init__`：构建 stem → 4 层残差组 → 分类头。`dropout_rate` 参数控制 FC 前的 Dropout（默认 0，训练时通过配置设为 0.5）。`_make_layer` 递增 `self.in_channels` 供下一层使用。
   - `forward(x)`：stem → layer1-4 → avgpool → flatten → dropout → fc。
-- **`create_model(num_classes=100, dropout_rate=0.0)`**：工厂函数，创建模型实例。
+- **`create_model(num_classes=10, dropout_rate=0.0)`**：工厂函数。
 - **`get_feature_extractor_state(model)`**：返回去掉 `fc.` 前缀的 state_dict，供迁移学习使用。
 
 ### 3.3 `data.py` — 数据加载
 
-训练集和测试集使用独立的变换管线：
+训练集和测试集使用独立的变换管线（变换构建来自 `utils.augment`）：
 
-- **训练集**：委托 `augment.py` 的 `build_train_transforms()` 构建（19 种增强 + 归一化）
-- **测试集**：仅 `ToTensor + Normalize`（无增强）
+- **训练集**：委托 `utils.augment.build_train_transforms(aug_config, mean, std)` 构建（19 种增强 + 归一化）
+- **测试集**：仅 `ToTensor + Normalize`（`build_test_transforms(mean, std)`）
 
-**`get_cifar100_loaders(config)`**：返回 CIFAR-100 的 `(train_loader, test_loader)`，首次运行自动下载。
+**`get_cifar100_datasets(config)`**：返回 CIFAR-100 的 `(train_dataset, test_dataset)`，供 skorch 训练使用。首次运行自动下载。
 
-**`get_cifar10_loaders(config)`**：返回 CIFAR-10 的 `(train_loader, test_loader)`。与 `get_cifar100_loaders` 结构一致，区别是使用 `datasets.CIFAR10` 和 config 中的 CIFAR-10 归一化统计量。函数签名接受 `TransferConfig | TrainConfig`（鸭子类型）。
+**`get_cifar100_loaders(config)`**：返回 `(train_loader, test_loader)`，由 `get_cifar100_datasets()` 创建 Dataset 后包装为 DataLoader。迁移学习等仍需 DataLoader 的场景使用此函数。
 
-超参数搜索的数据准备由 `search.py` / `transfer.py` 的 `_prepare_search_data()` / `_prepare_cifar10_data()` 处理（转为 numpy 数组，仅 Normalize），不经过此模块。
+**`get_cifar10_loaders(config)`**：返回 CIFAR-10 的 `(train_loader, test_loader)`。函数签名接受 `TransferConfig | TrainConfig`（鸭子类型）。
+
+超参数搜索的数据准备由 `utils.search.prepare_search_data()` 处理（转为 numpy 数组，仅 Normalize），不经过此模块。
 
 ### 3.3.1 `torchvision_transfer.py` — PyTorch 预训练模型迁移学习
 
@@ -277,38 +291,49 @@ src/Q3/
 
 冻结后仅 FC 层可训练，共 5,130 参数（`Linear(512, 10)`）。复用 `train.py` 的通用训练循环（`create_optimizer` 自动按 `requires_grad` 过滤参数）。
 
-### 3.4 `train.py` — 训练循环
+### 3.4 `Q2/training.py` + `utils/net.py` — skorch 训练管线
 
-**工厂函数**：
-- `create_optimizer(model, config)`：根据 `config.optimizer_type` 创建优化器（SGD/Adam/AdamW/RMSprop/NAdam）。**仅传入 `requires_grad=True` 的参数**，迁移学习冻结 backbone 后优化器只包含 FC 层参数
-- `create_scheduler(optimizer, config)`：根据 `config.scheduler_type` 创建调度器（CosineAnnealingLR/StepLR/constant=None）
-- `create_criterion(config)`：创建 `CrossEntropyLoss(label_smoothing=...)`
+CIFAR-100 训练已从手写 `train()` 循环迁移到 skorch `ClassifierNet(NeuralNetClassifier)` 管线：
 
-**`train_one_epoch`**：
-- 标准训练步骤：`zero_grad → batch augmentation → forward → loss → backward → step`
-- 每个批次前随机应用 CutMix / Mixup / 不增强（概率控制）
-- Soft labels 由 `CrossEntropyLoss` 原生处理
-- 准确率使用 dominant label 计算（soft labels 时用 `argmax`）
-- 累积 loss 和正确数，每 100 个 batch 打印进度
-- 返回 `(avg_loss, accuracy)`
+**`ClassifierNet`**（`utils/net.py`）— 通用 skorch 分类训练器：
+- 接受任意 PyTorch 模型类（Q2 传入 `ResNet18`，Q1 可传入 `VGG16`）
+- 覆写 `train_step_single()` 以在前向传播前应用 CutMix/Mixup 批次增强
+- `make_fixed_split(test_dataset)` 闭包将独立测试集作为验证集
+- `create_classifier_net()` 工厂自动配置：EarlyStopping、CosineAnnealingLR、CustomCheckpoint、EpochScoring(train_acc)、LRRecorder
 
-**`train`**（完整训练循环）：
-- 通过工厂函数创建优化器、调度器和损失函数
-- CutMix/Mixup 激活时自动禁用 `label_smoothing`（soft labels 已提供正则化）
-- 每 epoch：训练 → 评估 → 调整学习率 → 记录历史 → 保存最佳模型 → 早停检查
-- 当测试准确率创新高时，同时保存完整检查点和特征提取器
-- **早停策略**：连续 `patience` 轮测试准确率没有超过 `min_delta` 的改善则提前终止
-- 返回训练历史字典（每轮的 train_loss, train_acc, test_loss, test_acc, lr）
+**`train_resnet(config, train_ds, test_ds)`**（`Q2/training.py`）— 完整训练管线：
+- 调用 `create_classifier_net()` 创建 skorch 训练器
+- `net.fit(train_dataset, y=None)` 开始训练（skorch 自动管理 epoch 循环、早停、检查点）
+- 返回 `(net, history_dict)`，history 含 `dur`（每 epoch 计时，秒）
 
-### 3.5 `evaluate.py` — 评估
+**skorch 自动记录**：
+- `history['dur']` — 每 epoch 训练耗时（秒）
+- `history['train_loss']`, `history['valid_loss']` — 损失
+- `history['train_acc']`, `history['valid_acc']` — 准确率
+- `history['lr']` — 学习率（通过 LRRecorder 回调）
+
+**保留的 `Q3/train.py`**：迁移学习和 torchvision 迁移仍使用旧训练循环（加载预训练权重→冻结 backbone→仅训练 FC），后续将统一为 skorch 管线。
+
+**`utils/callbacks.py`** — 自定义 skorch 回调：
+- `CustomCheckpoint`：保存自定义格式检查点（含 accuracy/epoch/num_classes，迁移学习需要）
+- `FeatureExtractorCheckpoint`：保存特征提取器权重（去掉 FC 层）
+- `LRRecorder`：每个 epoch 记录当前学习率到 history
+- `TrainingHistory`：训练结束后导出标准 dict 并保存 JSON
+- `extract_history(net)`：skorch history_ → 标准历史字典（字段名映射 train_loss/valid_loss→train_loss/test_loss）
+
+### 3.5 `utils/evaluate.py` — 评估
+
+评估模块已移至 `utils/evaluate.py`，Q3 通过 `from utils.evaluate import ...` 使用。
 
 三个纯函数，全部使用 `@torch.no_grad()` 装饰器：
 
-- **`evaluate(model, loader, device)`** → `(loss, accuracy)`：全局 top-1 评估
-- **`per_class_accuracy(model, loader, device, num_classes)`** → `dict[int, float]`：每个类别的准确率，用于分析模型在细粒度类别上的表现差异
-- **`confusion_matrix(model, loader, device, num_classes)`** → `Tensor(100, 100)`：混淆矩阵（行=真实，列=预测）
+- **`evaluate(model, loader, device, use_amp=False)`** → `(loss, accuracy)`：全局 top-1 评估，支持 AMP
+- **`per_class_accuracy(model, loader, device, num_classes)`** → `dict[int, float]`：每个类别的准确率
+- **`confusion_matrix(model, loader, device, num_classes)`** → `Tensor(N, N)`：混淆矩阵（行=真实，列=预测）
 
-### 3.6 `checkpoint.py` — 检查点管理
+### 3.6 `Q3/checkpoint.py` — 检查点管理（迁移学习兼容）
+
+检查点管理保留在 Q3 供迁移学习模块使用。skorch 训练管线的检查点通过 `utils/callbacks.py` 的 `CustomCheckpoint` 处理。
 
 保存三种产物，文件名通过 `dataset_prefix(num_classes)` 动态生成：
 
@@ -324,7 +349,9 @@ src/Q3/
 
 特征提取器的提取逻辑：遍历 model 的 `state_dict()`，过滤掉所有以 `"fc."` 开头的 key。这样得到的权重只包含 stem + 4 组残差层的参数（特征提取部分），不包含分类头。
 
-### 3.7 `visualize.py` — 可视化
+### 3.7 `utils/visualize.py` — 可视化
+
+可视化模块已移至 `utils/visualize.py`。
 
 生成三张图到 `checkpoints/plots/` 目录：
 
@@ -334,20 +361,23 @@ src/Q3/
 
 ### 3.8 `main.py` — 主入口
 
-编排完整流程，包含两个独立分支：
+编排完整流程，CIFAR-100 训练分支使用 skorch 管线（`Q2.training.train_resnet()`），迁移学习分支使用旧训练循环：
 
-**CIFAR-100 训练分支**（默认）：
+**CIFAR-100 训练分支**（默认，skorch 管线）：
 
 ```
-解析命令行参数 → 生成时间戳运行目录 → 构建配置 → 创建模型 → 加载数据
+解析命令行参数 → 生成时间戳运行目录 → 构建配置
+→ get_cifar100_datasets()（返回 Dataset，不是 DataLoader）
 → [可选] 超参数搜索（--search / --search-only）
 → [可选] 自动加载已有搜索结果
-→ 训练 → 保存训练历史
-→ 最终评估（top-1 accuracy + per-class accuracy + 混淆矩阵）
-→ 生成可视化 → 验证迁移学习就绪
+→ train_resnet(config, train_ds, test_ds)（skorch 管线）
+  → ClassifierNet.fit() 自动处理：训练、早停、检查点、计时
+→ 返回 (net, history_dict)，history 含 dur（每 epoch 计时）
+→ 最终评估（per_class_accuracy + confusion_matrix）
+→ 生成可视化
 ```
 
-**迁移学习分支**（`--transfer`）：
+**迁移学习分支**（`--transfer`，旧训练循环）：
 
 ```
 解析命令行参数 → 生成时间戳运行目录
@@ -482,7 +512,42 @@ augment.py
 
 ## 5. 训练流程
 
-### 5.1 优化策略
+CIFAR-100 训练使用 skorch `ClassifierNet(NeuralNetClassifier)` 管线（`Q2/training.py`），替代了原始的手写训练循环。迁移学习仍使用旧 `train()` 函数。
+
+### 5.1 skorch 训练管线
+
+**`train_resnet(config, train_ds, test_ds)`** 调用 `create_classifier_net()` 创建配置好的 skorch 网络：
+
+```
+ClassifierNet(
+  ResNet18,
+  module__num_classes=100,
+  module__dropout_rate=0.5,
+  criterion=CrossEntropyLoss(label_smoothing=...),
+  optimizer=SGD,
+  lr=0.1,
+  callbacks=[
+    EarlyStopping(patience=8, monitor=valid_acc),
+    CustomCheckpoint(save on valid_acc_best),
+    FeatureExtractorCheckpoint(save on valid_acc_best),
+    LRScheduler(CosineAnnealingLR, T_max=150),
+    EpochScoring(accuracy, train_acc, on_train=True),
+    LRRecorder(),
+    TrainingHistory(save JSON on_train_end),
+  ],
+  train_split=make_fixed_split(test_dataset),
+)
+```
+
+**skorch 自动管理的功能**：
+- 每 epoch 训练 + 验证（测试集作为验证集）
+- CutMix/Mixup 批次增强（通过 `train_step_single()` 覆写）
+- 早停（监控 `valid_acc`，patience=8）
+- 检查点保存（自定义格式，含 accuracy/epoch/num_classes）
+- 学习率调度（CosineAnnealingLR）
+- **计时**（`history['dur']` 记录每 epoch 耗时）
+
+### 5.2 优化策略
 
 | 组件 | 选择 | 原因 |
 |---|---|---|
@@ -627,7 +692,7 @@ return TrainConfig(**overrides)
 - Train（含增强）：Resize(224) → HFlip → Crop → ColorJitter → ToTensor → Normalize(ImageNet)
 - Test：Resize(224) → ToTensor → Normalize(ImageNet)
 
-使用 **skorch** 将 ResNet-18 包装为 sklearn 兼容估计器，然后用 **sklearn.model_selection** 的搜索工具做超参数搜索。sklearn 的搜索框架自带交叉验证、successive halving、标准评分指标，避免手写 fitness 函数的各种陷阱。
+超参数搜索使用 **skorch + sklearn**，通用搜索基础设施在 `utils/search.py`，Q3 的 `search.py` 提供 CIFAR-100 特定的数据准备和参数映射。sklearn 的搜索框架自带交叉验证、successive halving、标准评分指标，避免手写 fitness 函数的各种陷阱。
 
 支持三种策略，通过 `SearchConfig.strategy` 或 `--search-strategy` 选择：
 
@@ -673,7 +738,7 @@ return TrainConfig(**overrides)
 
 ### 7.4 数据准备
 
-`_prepare_search_data()` 将 CIFAR-100 训练集转为 numpy 数组：
+搜索的数据准备已移至 `utils/search.prepare_search_data()`，Q3 的 `_prepare_search_data()` 是对它的封装。
 
 ```python
 X, y = _prepare_search_data(config)

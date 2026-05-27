@@ -8,7 +8,7 @@ Validates: output shape, parameter count, gradient flow, feature extractor extra
 
 import torch
 
-from src.Q3.model import ResNet18, create_model, get_feature_extractor_state
+from src.Q2.model import ResNet18, create_model, get_feature_extractor_state
 
 
 def test_output_shape() -> None:

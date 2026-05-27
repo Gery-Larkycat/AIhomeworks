@@ -34,7 +34,7 @@ from sklearn.model_selection import (
 from torchvision import datasets
 
 from .config import SearchConfig, TrainConfig
-from .model import ResNet18
+from Q2.model import ResNet18
 
 
 # TrainConfig 有效字段集合，用于过滤搜索结果中的无关参数

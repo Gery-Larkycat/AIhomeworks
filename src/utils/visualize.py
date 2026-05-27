@@ -2,8 +2,9 @@
 Visualization utilities for training metrics and model analysis.
 训练指标和模型分析的可视化工具。
 
-Generates: training curves (loss & accuracy), confusion matrix heatmap.
-生成：训练曲线（损失和准确率）、混淆矩阵热力图。
+Generates: training curves (loss & accuracy), confusion matrix heatmap,
+learning rate schedule.
+生成：训练曲线（损失和准确率）、混淆矩阵热力图、学习率调度。
 """
 
 from pathlib import Path
@@ -12,12 +13,10 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 # Use CJK-compatible font on Windows to render Chinese labels
-# 使用支持中文的字体以正确显示中文标签
 mpl.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
-mpl.rcParams["axes.unicode_minus"] = False  # Fix minus sign rendering / 修复负号显示
+mpl.rcParams["axes.unicode_minus"] = False
+
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 
 
 def plot_training_curves(
@@ -35,7 +34,6 @@ def plot_training_curves(
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Loss curve / 损失曲线
     ax1.plot(epochs, history["train_loss"], label="Train Loss", color="blue")
     ax1.plot(epochs, history["test_loss"], label="Test Loss", color="red")
     ax1.set_xlabel("Epoch")
@@ -44,7 +42,6 @@ def plot_training_curves(
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # Accuracy curve / 准确率曲线
     ax2.plot(epochs, history["train_acc"], label="Train Acc", color="blue")
     ax2.plot(epochs, history["test_acc"], label="Test Acc", color="red")
     ax2.set_xlabel("Epoch")
@@ -68,10 +65,6 @@ def plot_confusion_matrix(
     """
     Plot confusion matrix as a heatmap.
     绘制混淆矩阵热力图。
-
-    For CIFAR-100 (100 classes), the full matrix is large.
-    max_labels controls how many classes to show (0 = show all).
-    max_labels 控制显示多少类别（0=显示全部）。
     """
     save_dir.mkdir(parents=True, exist_ok=True)
     save_path = save_dir / "confusion_matrix.png"

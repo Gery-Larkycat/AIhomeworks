@@ -30,4 +30,4 @@
 - 重新微调网络。
 比较两种训练方式的结果。
 
-作业三的具体实现代码参见`src/Q3/`，文档参见[doc/Q3/README.md](doc/Q3/README.md)
+作业三的具体实现代码参见`src/Q3/`，文档参见[src/Q3/README.md](src/Q3/README.md)

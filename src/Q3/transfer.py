@@ -27,7 +27,7 @@ from torchvision import datasets
 from .checkpoint import save_training_history
 from .config import TrainConfig, TransferConfig
 from .data import get_cifar10_loaders
-from .model import ResNet18
+from Q2.model import ResNet18
 from .train import train
 
 

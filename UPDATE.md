@@ -258,3 +258,65 @@
 - 训练默认启用 Dropout（rate=0.5）；可通过 `--dropout 0` 禁用
 - 超参数搜索自动探索 dropout_rate，搜索结果会覆盖默认值
 - 迁移学习不受影响（`ResNet18` 默认 `dropout_rate=0`，预训练权重加载不涉及 Dropout 参数）
+
+---
+
+## 2026-05-26: 代码重构 — utils 提取 + skorch 训练包装 + Q2 建立
+
+### Added / 新增
+
+- `src/utils/__init__.py`: 共享包标记
+- `src/utils/config.py`: `AugmentationConfig`, `SearchConfig`, 数据集常量（CIFAR-10/100/ImageNet）, 辅助函数（`generate_timestamp`, `make_run_dir`, `dataset_prefix`）
+- `src/utils/augment.py`: 19 种增强技术（从 Q3 提取），`build_train_transforms(aug_config, mean, std)` 和 `build_test_transforms(mean, std)` 签名改为显式参数
+- `src/utils/net.py`: ★ `ClassifierNet(NeuralNetClassifier)` 通用 skorch 训练器
+  - 覆写 `train_step_single()` 支持 CutMix/Mixup 批次增强
+  - `make_fixed_split()` 闭包将测试集作为验证集
+  - `create_classifier_net()` 工厂自动配置 EarlyStopping/LRScheduler/CustomCheckpoint/EpochScoring
+- `src/utils/callbacks.py`: ★ 自定义 skorch 回调
+  - `CustomCheckpoint`: 保存自定义格式检查点（含 accuracy/epoch/num_classes）
+  - `FeatureExtractorCheckpoint`: 保存特征提取器权重（迁移学习）
+  - `LRRecorder`: 记录学习率到 history
+  - `TrainingHistory`: 训练结束保存 JSON
+  - `extract_history()`: skorch history_ → 标准历史字典
+- `src/utils/evaluate.py`: `evaluate()`, `per_class_accuracy()`, `confusion_matrix()`
+- `src/utils/visualize.py`: `plot_training_curves()`, `plot_confusion_matrix()`, `plot_lr_schedule()`
+- `src/utils/search.py`: 通用 `run_search(X, y, model_class, ...)` 搜索接口, `prepare_search_data()`, `load_best_search_params()`
+- `src/Q2/__init__.py`: Q2 包标记
+- `src/Q2/model.py`: ResNet-18（`BasicBlock`, `ResNet18`, `create_model`, `get_feature_extractor_state`）— 从 Q3 移入
+- `src/Q2/config.py`: `Q2TrainConfig`（CIFAR-10 默认值: 10 类, batch=128, epochs=200）
+- `src/Q2/data.py`: `get_cifar10_datasets()`, `get_cifar10_test_only()` — 返回 Dataset（不是 DataLoader）
+- `src/Q2/search.py`: `run_q2_search()`, `load_q2_best_params()` — CIFAR-10 数据准备 + 调用通用搜索
+- `src/Q2/training.py`: ★ `train_resnet(config, train_ds, test_ds)` — 完整 ResNet-18 skorch 训练管线
+  - Q2 和 Q3 的 CIFAR-100 训练共用此函数
+  - 返回 `(net, history_dict)`，history 含 `dur`（每 epoch 计时）
+- `src/Q2/tests/__init__.py`: 测试包标记
+- `pyproject.toml`: 新增 `[tool.pytest.ini_options] pythonpath = ["src"]`
+
+### Changed / 变更
+
+- `src/Q3/config.py`: 仅保留 Q3 特有配置（`TrainConfig`, `TransferConfig`, `TorchvisionTransferConfig`），共享类型从 utils 导入并 re-export
+- `src/Q3/data.py`: 新增 `get_cifar100_datasets()`（返回 Dataset），augment 调用改为 `(aug_config, mean, std)` 签名
+- `src/Q3/main.py`: CIFAR-100 训练分支改用 `Q2.training.train_resnet()` + skorch 管线，评估/可视化从 utils 导入
+- `src/Q3/train.py`, `src/Q3/checkpoint.py`, `src/Q3/search.py`, `src/Q3/transfer.py`: 导入从本地模块改为 utils/Q2
+- `src/Q3/tests/`: 所有测试导入更新为 utils/Q2 路径
+
+### Deleted / 删除
+
+- `src/Q3/model.py` → 移入 `src/Q2/model.py`
+- `src/Q3/evaluate.py` → 移入 `src/utils/evaluate.py`
+- `src/Q3/visualize.py` → 移入 `src/utils/visualize.py`
+- `src/Q3/augment.py` → 移入 `src/utils/augment.py`
+
+### Architecture Change / 架构变更
+
+```
+src/
+  utils/      ← 跨作业共享（Q1/Q2/Q3 都可引用）
+  Q2/         ← ResNet-18 训练管线（Q3 引用此）
+  Q3/         ← CIFAR-100 + 迁移学习（引用 Q2 + utils）
+```
+
+- 训练引擎从手写 `train()` 函数切换到 skorch `NeuralNetClassifier`
+- 每轮训练自动记录 `dur`（耗时，秒），可通过 `history['dur']` 获取
+- Q3 的 CIFAR-100 训练通过 `Q2.training.train_resnet()` 调用，Q3 仅保留迁移学习特有代码
+

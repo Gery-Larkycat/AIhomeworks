@@ -23,7 +23,7 @@ import torch.nn as nn
 from torch.optim import SGD
 
 from .config import TrainConfig, dataset_prefix
-from .model import ResNet18, get_feature_extractor_state
+from Q2.model import ResNet18, get_feature_extractor_state
 
 
 def _ensure_dir(path: Path) -> None:

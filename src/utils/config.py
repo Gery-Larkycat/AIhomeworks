@@ -1,0 +1,190 @@
+"""
+Shared configuration components for all homework assignments.
+所有作业共享的配置组件。
+
+Contains augmentation settings, search configuration, dataset normalization
+constants, and filesystem helper functions used across Q1/Q2/Q3.
+
+包含增强设置、搜索配置、数据集归一化常量，
+以及 Q1/Q2/Q3 共用的文件系统辅助函数。
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Dataset normalization constants / 数据集归一化常量
+# ---------------------------------------------------------------------------
+
+CIFAR10_MEAN: tuple[float, ...] = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD: tuple[float, ...] = (0.2470, 0.2435, 0.2616)
+
+CIFAR100_MEAN: tuple[float, ...] = (0.5071, 0.4867, 0.4408)
+CIFAR100_STD: tuple[float, ...] = (0.2675, 0.2565, 0.2761)
+
+IMAGENET_MEAN: tuple[float, ...] = (0.485, 0.456, 0.406)
+IMAGENET_STD: tuple[float, ...] = (0.229, 0.224, 0.225)
+
+
+# ---------------------------------------------------------------------------
+# AugmentationConfig / 增强配置
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AugmentationConfig:
+    """
+    19 种增强技术，5 大类。
+    19 augmentation techniques across 5 categories.
+
+    Design: frozen dataclass with all fields having sensible defaults.
+    Each field can be overridden via dataclasses.replace() for search.
+
+    Categories / 大类:
+      A. Geometric (几何变换): RandomCrop, HFlip, Affine, Perspective
+      B. Color (颜色变换): ColorJitter, Grayscale, AutoContrast,
+         Equalize, Posterize, Solarize
+      C. Noise & Degradation (噪声与降质): GaussianNoise, SaltPepper,
+         GaussianBlur, RandomErasing
+      D. Weather & Compression (天气与压缩): JPEGCompression, Fog, Rain
+      E. Batch Mixing (批次级混合): CutMix, Mixup
+    """
+
+    # -- Master switch / 总开关 --
+    use_augmentation: bool = True
+
+    # -- A. Geometric / 几何变换 --
+    random_crop_padding: int = 4
+    hflip_prob: float = 0.5
+    affine_degrees: float = 15.0
+    affine_translate: float = 0.1
+    affine_scale: tuple[float, float] = (0.9, 1.1)
+    affine_shear: float = 5.0
+    perspective_distortion: float = 0.2
+    perspective_prob: float = 0.3
+
+    # -- B. Color / 颜色变换 --
+    cj_brightness: float = 0.3
+    cj_contrast: float = 0.3
+    cj_saturation: float = 0.3
+    cj_hue: float = 0.15
+    grayscale_prob: float = 0.1
+    auto_contrast_prob: float = 0.2
+    equalize_prob: float = 0.1
+    posterize_bits: int = 4
+    posterize_prob: float = 0.1
+    solarize_threshold: float = 128.0
+    solarize_prob: float = 0.1
+
+    # -- C. Noise & Degradation / 噪声与降质 --
+    gaussian_noise_std: float = 0.02
+    gaussian_noise_prob: float = 0.5
+    salt_pepper_amount: float = 0.01
+    salt_pepper_prob: float = 0.2
+    gaussian_blur_kernel: int = 3
+    gaussian_blur_prob: float = 0.2
+    erasing_prob: float = 0.25
+    erasing_scale: tuple[float, float] = (0.02, 0.2)
+
+    # -- D. Weather & Compression / 天气与压缩 --
+    jpeg_quality: tuple[int, int] = (30, 70)
+    jpeg_prob: float = 0.2
+    fog_intensity: tuple[float, float] = (0.05, 0.2)
+    fog_prob: float = 0.15
+    rain_drops: tuple[int, int] = (3, 10)
+    rain_angle: tuple[float, float] = (-30.0, 30.0)
+    rain_prob: float = 0.15
+
+    # -- E. Batch mixing / 批次级混合 --
+    use_cutmix: bool = True
+    cutmix_alpha: float = 1.0
+    use_mixup: bool = True
+    mixup_alpha: float = 0.2
+    # P(applying either cutmix or mixup per batch);
+    # within that, cutmix 4:3 mixup ratio
+    # 每个批次应用 CutMix 或 Mixup 的概率;
+    # 其中 CutMix:Mixup = 4:3
+    mix_prob: float = 0.7
+
+
+# ---------------------------------------------------------------------------
+# SearchConfig / 搜索配置
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SearchConfig:
+    """
+    超参数搜索配置，用于 skorch + sklearn 搜索管线。
+    Search config for skorch + sklearn hyperparameter search pipeline.
+
+    搜索空间（lr, momentum, weight_decay）以 scipy.stats 分布形式
+    硬编码在 search.py 中；此处仅控制搜索策略和行为参数。
+
+    Supports: halving-random (default), random, grid.
+    支持：halving-random（默认）、random、grid。
+    """
+
+    # -- Strategy / 搜索策略 --
+    strategy: str = "halving-random"
+
+    # -- Successive halving / 逐步减半参数 --
+    search_epochs_min: int = 2
+    search_epochs_max: int = 20
+    halving_factor: int = 3
+
+    # -- Candidate sampling / 候选采样 --
+    num_trials: int = 50
+
+    # -- Cross-validation / 交叉验证 --
+    cv: int = 3
+
+    # -- Discrete params / 离散参数 --
+    batch_size_choices: tuple[int, ...] = (128, 256, 512)
+
+    # -- Scoring / 评分指标 --
+    scoring: str = "accuracy"
+
+
+# ---------------------------------------------------------------------------
+# Run directory helpers / 运行目录辅助函数
+# ---------------------------------------------------------------------------
+
+
+def generate_timestamp() -> str:
+    """
+    生成时间戳字符串，用于训练运行目录命名。
+    Format: YYYY-MM-DD_HHMMSS (sortable, readable, Windows-safe).
+    """
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+
+def make_run_dir(
+    base: Path = Path("checkpoints"),
+    timestamp: str | None = None,
+) -> Path:
+    """
+    构造带时间戳的运行目录路径。
+    Construct timestamped run directory path.
+    Directory is NOT created here — save functions create it on demand.
+    目录不在此创建——由各 save 函数按需创建。
+    """
+    if timestamp is None:
+        timestamp = generate_timestamp()
+    return base / timestamp
+
+
+def dataset_prefix(num_classes: int) -> str:
+    """
+    根据 num_classes 返回检查点文件名前缀。
+    Return checkpoint filename prefix based on num_classes.
+
+    100 → resnet18_cifar100, 10 → resnet18_cifar10, 其他 → resnet18_Ncls。
+    """
+    if num_classes == 100:
+        return "resnet18_cifar100"
+    if num_classes == 10:
+        return "resnet18_cifar10"
+    return f"resnet18_{num_classes}cls"

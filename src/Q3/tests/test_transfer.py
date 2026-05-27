@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 
 from src.Q3.config import TransferConfig, TrainConfig
-from src.Q3.model import ResNet18
+from src.Q2.model import ResNet18
 from src.Q3.transfer import (
     find_best_cifar100_checkpoint,
     freeze_backbone,
@@ -168,9 +168,9 @@ class TestTransferConfig:
         assert cfg.learning_rate == 0.01
 
     def test_default_epochs(self):
-        """默认 30 epochs。"""
+        """默认 50 epochs。"""
         cfg = TransferConfig()
-        assert cfg.epochs == 30
+        assert cfg.epochs == 50
 
     def test_default_cifar10_stats(self):
         """默认使用 CIFAR-10 归一化统计量。"""
