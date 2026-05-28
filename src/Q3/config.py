@@ -22,6 +22,8 @@ from utils.config import (
     IMAGENET_STD,
     generate_timestamp,
     make_run_dir,
+    make_search_dir,
+    find_best_search_result,
     dataset_prefix,
 )
 
@@ -44,10 +46,14 @@ class TrainConfig:
 
     # -- Paths / 路径配置 --
     data_root: Path = Path("data")
-    checkpoint_dir: Path = Path("checkpoints")
+    checkpoint_dir: Path = Path("outputs/Q3/checkpoints")
 
     # -- Model / 模型配置 --
     num_classes: int = 100  # CIFAR-100 has 100 classes / CIFAR-100 有 100 个类别
+    # 任务标签，用于区分检查点文件名：
+    # "" = CIFAR-100 训练, "transfer" = CIFAR-100→10 迁移,
+    # "tvtransfer" = torchvision→10 迁移
+    task_tag: str = ""
     dropout_rate: float = (
         0.5  # Dropout after global avg pool; 0 = disabled / 全局池化后 Dropout；0 = 禁用
     )
@@ -103,7 +109,9 @@ class TransferConfig:
     """
 
     # -- Source / 源模型 --
-    source_checkpoint: Path = Path("checkpoints/resnet18_cifar100_best.pth")
+    source_checkpoint: Path = Path(
+        "outputs/Q3/checkpoints"
+    )  # 目录，运行时自动发现最优模型
     source_num_classes: int = 100  # 源模型类别数 / source model class count
 
     # -- Target / 目标数据集 --
@@ -129,7 +137,7 @@ class TransferConfig:
     num_workers: int = 0
     pin_memory: bool = True
     data_root: Path = Path("data")
-    checkpoint_dir: Path = Path("checkpoints")
+    checkpoint_dir: Path = Path("outputs/Q3/checkpoints")
 
     # -- Augmentation / 数据增强 --
     augmentation: AugmentationConfig = AugmentationConfig()
@@ -182,7 +190,7 @@ class TorchvisionTransferConfig:
     num_workers: int = 0
     pin_memory: bool = True
     data_root: Path = Path("data")
-    checkpoint_dir: Path = Path("checkpoints")
+    checkpoint_dir: Path = Path("outputs/Q3/checkpoints")
 
     # -- Augmentation / 数据增强 --
     augmentation: AugmentationConfig = AugmentationConfig()
@@ -210,5 +218,7 @@ __all__ = [
     "IMAGENET_STD",
     "generate_timestamp",
     "make_run_dir",
+    "make_search_dir",
+    "find_best_search_result",
     "dataset_prefix",
 ]

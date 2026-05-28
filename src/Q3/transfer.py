@@ -27,6 +27,7 @@ from torchvision import datasets
 from .checkpoint import save_training_history
 from .config import TrainConfig, TransferConfig
 from .data import get_cifar10_loaders
+from utils.config import generate_timestamp, make_search_dir
 from Q2.model import ResNet18
 from .train import train
 
@@ -102,7 +103,7 @@ def print_transfer_summary(model: ResNet18) -> None:
 
 
 def find_best_cifar100_checkpoint(
-    checkpoints_root: Path = Path("checkpoints"),
+    checkpoints_root: Path = Path("outputs/Q3/checkpoints"),
     best_filename: str = "resnet18_cifar100_best.pth",
 ) -> Path | None:
     """
@@ -261,9 +262,12 @@ def _save_transfer_search_results(
 ) -> Path:
     """
     保存迁移学习搜索结果为 JSON。
+    Save to outputs/Q3/search_results/<timestamp>_transfer_hp_search.json.
     """
-    config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    path = config.checkpoint_dir / "transfer_hp_search_results.json"
+    search_dir = make_search_dir("Q3")
+    search_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = generate_timestamp()
+    path = search_dir / f"{timestamp}_transfer_hp_search.json"
 
     cv_results = searcher.cv_results_
     all_candidates = []
@@ -323,6 +327,43 @@ _TRANSFER_PARAM_MAP: dict[str, str] = {
     "optimizer__weight_decay": "weight_decay",
     "batch_size": "batch_size",
 }
+
+
+def load_transfer_search_params(
+    specific_file: Path | None = None,
+) -> dict[str, object] | None:
+    """
+    从迁移搜索结果加载最优超参数（映射为 TransferConfig 字段名）。
+    Load best params from transfer search results.
+
+    如果指定 specific_file 则直接加载；
+    否则扫描 outputs/Q3/search_results/*_transfer_hp_search.json
+    选 mean_test_score 最高的。
+    """
+    from utils.config import find_best_search_result
+
+    if specific_file is not None:
+        path = specific_file
+        if not path.exists():
+            return None
+    else:
+        search_dir = make_search_dir("Q3")
+        path = find_best_search_result(
+            search_dir,
+            pattern="*_transfer_hp_search.json",
+        )
+        if path is None:
+            return None
+
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    raw_params = data["best"]["params"]
+    mapped = {
+        _TRANSFER_PARAM_MAP.get(k, k): v
+        for k, v in raw_params.items()
+    }
+    return {k: v for k, v in mapped.items() if k in _VALID_TRAIN_FIELDS}
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +483,8 @@ def _to_train_config(config: TransferConfig) -> TrainConfig:
         for f in train_fields
         if hasattr(config, f)
     }
+    # 标记来源任务，区分检查点文件名
+    overrides.setdefault("task_tag", "transfer")
     return TrainConfig(**overrides)
 
 

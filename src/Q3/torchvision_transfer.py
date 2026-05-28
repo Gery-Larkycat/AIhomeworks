@@ -217,6 +217,8 @@ def _to_train_config(
         for f in train_fields
         if hasattr(tv_config, f)
     }
+    # 标记来源任务，区分检查点文件名
+    overrides.setdefault("task_tag", "tvtransfer")
     return TrainConfig(**overrides)
 
 

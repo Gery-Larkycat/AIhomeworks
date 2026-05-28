@@ -15,6 +15,14 @@ Q2/
 ├── search.py     # Q2 超参搜索（委托 utils.search）
 └── tests/
     └── __init__.py
+
+outputs/Q2/
+├── checkpoints/                          # 训练检查点 / Training checkpoints
+│   └── <timestamp>/                      # 每次运行的独立目录 / Per-run directory
+│       ├── resnet18_cifar10_best.pth     # 最优模型权重 / Best model weights
+│       └── training_log.json             # 训练历史 / Training history
+└── search_results/                       # 超参搜索结果 / HP search results
+    └── <timestamp>_cifar10_hp_search.json
 ```
 
 ---
@@ -53,6 +61,8 @@ Q2/
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
+| `data_root` | `Path("data")` | 数据集根目录 / Dataset root |
+| `checkpoint_dir` | `Path("outputs/Q2/checkpoints")` | 检查点保存目录 / Checkpoint save dir |
 | `num_classes` | `10` | CIFAR-10 类别数 |
 | `dropout_rate` | `0.5` | FC 前 Dropout |
 | `batch_size` | `128` | 批大小 |
@@ -108,8 +118,8 @@ skorch 自动管理的功能：epoch 循环、EarlyStopping（patience=10）、C
 
 Q2 的 CIFAR-10 超参搜索，委托 `utils.search` 通用搜索模块。
 
-- `run_q2_search(config, search_cfg)` — 加载 CIFAR-10 训练集（仅 Normalize），调用 `run_search(ResNet18, ...)`
-- `load_q2_best_params(config)` → `dict | None` — 加载搜索结果，过滤为 `Q2TrainConfig` 有效字段
+- `run_q2_search(config, search_cfg)` — 加载 CIFAR-10 训练集（仅 Normalize），调用 `run_search(ResNet18, ...)`，结果保存到 `outputs/Q2/search_results/<timestamp>_cifar10_hp_search.json`
+- `load_q2_best_params(specific_file)` → `dict | None` — 默认扫描 `outputs/Q2/search_results/*_cifar10_hp_search.json`，加载搜索结果，过滤为 `Q2TrainConfig` 有效字段
 
 搜索空间与 `utils.search` 一致（lr, momentum, weight_decay, batch_size, dropout_rate）。
 

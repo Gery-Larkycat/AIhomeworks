@@ -10,11 +10,9 @@ Generic hyperparameter search via skorch + sklearn.
 如需为其他模型定制搜索空间，可传入自定义 param_distributions。
 """
 
-import dataclasses
 import json
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -27,9 +25,8 @@ from sklearn.model_selection import (
     HalvingRandomSearchCV,
     RandomizedSearchCV,
 )
-from torchvision import datasets
 
-from .config import SearchConfig
+from .config import SearchConfig, generate_timestamp, find_best_search_result
 
 
 # ---------------------------------------------------------------------------
@@ -123,15 +120,19 @@ def _build_param_grid(search_cfg: SearchConfig) -> dict:
 
 def _save_search_results(
     search_obj,
-    checkpoint_dir: Path,
+    search_dir: Path,
     search_cfg: SearchConfig,
+    suffix: str = "hp_search",
 ) -> Path:
     """
     将 sklearn 搜索结果保存为 JSON。
     Save sklearn search results to JSON.
+
+    文件名格式：<timestamp>_<suffix>.json
     """
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    path = checkpoint_dir / "hp_search_results.json"
+    search_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = generate_timestamp()
+    path = search_dir / f"{timestamp}_{suffix}.json"
 
     cv_results = search_obj.cv_results_
 
@@ -148,15 +149,19 @@ def _save_search_results(
             for k, v in cv_results.items()
             if k.startswith("param_")
         }
-        all_candidates.append(
-            {
-                "params": params,
-                "mean_test_score": round(float(cv_results["mean_test_score"][i]), 6),
-                "std_test_score": round(float(cv_results["std_test_score"][i]), 6),
-                "mean_fit_time": round(float(cv_results["mean_fit_time"][i]), 2),
-                "rank": int(cv_results["rank_test_score"][i]),
-            }
-        )
+        all_candidates.append({
+            "params": params,
+            "mean_test_score": round(
+                float(cv_results["mean_test_score"][i]), 6
+            ),
+            "std_test_score": round(
+                float(cv_results["std_test_score"][i]), 6
+            ),
+            "mean_fit_time": round(
+                float(cv_results["mean_fit_time"][i]), 2
+            ),
+            "rank": int(cv_results["rank_test_score"][i]),
+        })
 
     best_params = {
         k: (
@@ -184,7 +189,10 @@ def _save_search_results(
                 OrderedDict(
                     [
                         ("params", best_params),
-                        ("mean_test_score", round(float(search_obj.best_score_), 6)),
+                        (
+                            "mean_test_score",
+                            round(float(search_obj.best_score_), 6),
+                        ),
                     ]
                 ),
             ),
@@ -199,23 +207,37 @@ def _save_search_results(
 
 
 def load_best_search_params(
-    checkpoint_dir: Path,
+    search_dir: Path,
     valid_fields: set[str] | None = None,
+    pattern: str = "*_hp_search.json",
+    specific_file: Path | None = None,
 ) -> dict[str, object] | None:
     """
-    从 hp_search_results.json 加载最优超参数（映射为配置字段名）。
+    从搜索结果 JSON 加载最优超参数（映射为配置字段名）。
     Load best params from JSON, mapped to config field names.
 
+    如果指定 specific_file 则直接加载该文件；
+    否则扫描 search_dir 下匹配 pattern 的文件，
+    选 mean_test_score 最高的。
+
     Args:
-        checkpoint_dir: 检查点目录
+        search_dir:     搜索结果目录（如 outputs/Q3/search_results/）
         valid_fields:   有效字段集合，用于过滤无关参数。
                         None 时不过滤（返回所有映射后的字段）。
+        pattern:        glob 匹配模式（扫描时使用）
+        specific_file:  指定具体文件路径（跳过扫描）
 
-    Returns None if file doesn't exist.
+    Returns None if no matching file found.
     """
-    path = checkpoint_dir / "hp_search_results.json"
-    if not path.exists():
-        return None
+    if specific_file is not None:
+        path = specific_file
+        if not path.exists():
+            return None
+    else:
+        path = find_best_search_result(search_dir, pattern)
+        if path is None:
+            return None
+
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
@@ -277,8 +299,9 @@ def run_search(
     model_class: type,
     model_kwargs: dict,
     search_cfg: SearchConfig,
-    checkpoint_dir: Path,
+    search_dir: Path,
     num_workers: int = 0,
+    suffix: str = "hp_search",
 ) -> dict[str, object]:
     """
     运行通用超参搜索并保存结果。
@@ -292,10 +315,11 @@ def run_search(
         X:             训练数据 (N, 3, 32, 32) float32
         y:             标签 (N,) int64
         model_class:   模型类（如 ResNet18）
-        model_kwargs:  模型构造参数（如 {"num_classes": 100, "dropout_rate": 0.5}）
+        model_kwargs:  模型构造参数
         search_cfg:    搜索配置
-        checkpoint_dir: 结果保存目录
+        search_dir:    搜索结果保存目录
         num_workers:   DataLoader 工作线程数
+        suffix:        结果文件名后缀（如 cifar100_hp_search）
 
     Returns:
         映射后的最优参数字典（配置字段名），可直接用于 dataclasses.replace()
@@ -367,7 +391,9 @@ def run_search(
     searcher.fit(X, y)
 
     # 保存结果
-    results_path = _save_search_results(searcher, checkpoint_dir, search_cfg)
+    results_path = _save_search_results(
+        searcher, search_dir, search_cfg, suffix,
+    )
 
     # 输出摘要
     print("\n" + "=" * 60)

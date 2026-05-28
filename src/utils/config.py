@@ -9,6 +9,7 @@ constants, and filesystem helper functions used across Q1/Q2/Q3.
 以及 Q1/Q2/Q3 共用的文件系统辅助函数。
 """
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -162,29 +163,80 @@ def generate_timestamp() -> str:
 
 
 def make_run_dir(
-    base: Path = Path("checkpoints"),
+    question: str = "Q3",
     timestamp: str | None = None,
 ) -> Path:
     """
     构造带时间戳的运行目录路径。
-    Construct timestamped run directory path.
+    Construct: outputs/<question>/checkpoints/<timestamp>.
     Directory is NOT created here — save functions create it on demand.
     目录不在此创建——由各 save 函数按需创建。
     """
     if timestamp is None:
         timestamp = generate_timestamp()
-    return base / timestamp
+    return Path("outputs") / question / "checkpoints" / timestamp
 
 
-def dataset_prefix(num_classes: int) -> str:
+def make_search_dir(question: str = "Q3") -> Path:
     """
-    根据 num_classes 返回检查点文件名前缀。
-    Return checkpoint filename prefix based on num_classes.
+    构造超参搜索结果目录路径。
+    Construct search results directory: outputs/<question>/search_results/.
+    Directory is NOT created here — save functions create it on demand.
+    目录不在此创建——由各 save 函数按需创建。
+    """
+    return Path("outputs") / question / "search_results"
+
+
+def find_best_search_result(
+    search_dir: Path,
+    pattern: str = "*_hp_search.json",
+) -> Path | None:
+    """
+    扫描搜索结果目录，找到 mean_test_score 最高的文件。
+    Scan search_dir for files matching pattern, pick highest mean_test_score.
+
+    同分数时按文件名倒序（ISO 时间戳前缀 → 最新优先）。
+    文件格式需含 best.mean_test_score 字段。
+    文件损坏或格式不符时静默跳过。
+    """
+    if not search_dir.exists():
+        return None
+
+    candidates: list[tuple[float, Path]] = []
+    # 按名称倒序遍历，同分时最新的排在前面
+    paths = sorted(
+        search_dir.glob(pattern),
+        key=lambda p: p.name, reverse=True,
+    )
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            score = float(data["best"]["mean_test_score"])
+            candidates.append((score, path))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+
+    if not candidates:
+        return None
+
+    # 按分数降序，同分时倒序遍历已保证最新在前
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def dataset_prefix(num_classes: int, task: str = "") -> str:
+    """
+    根据 num_classes 和任务类型返回检查点文件名前缀。
+    Return checkpoint filename prefix based on num_classes and task.
 
     100 → resnet18_cifar100, 10 → resnet18_cifar10, 其他 → resnet18_Ncls。
+    task 非空时追加下划线后缀：resnet18_cifar10_transfer。
     """
     if num_classes == 100:
-        return "resnet18_cifar100"
-    if num_classes == 10:
-        return "resnet18_cifar10"
-    return f"resnet18_{num_classes}cls"
+        base = "resnet18_cifar100"
+    elif num_classes == 10:
+        base = "resnet18_cifar10"
+    else:
+        base = f"resnet18_{num_classes}cls"
+    return f"{base}_{task}" if task else base

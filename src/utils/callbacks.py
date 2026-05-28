@@ -30,10 +30,12 @@ class CustomCheckpoint(Callback):
         checkpoint_dir: Path | str,
         num_classes: int,
         monitor: str = "valid_acc_best",
+        task_tag: str = "",
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.num_classes = num_classes
         self.monitor = monitor
+        self.task_tag = task_tag
 
     def on_epoch_end(self, net, **kwargs):
         # 仅在新最优时保存 / Only save on new best
@@ -42,7 +44,7 @@ class CustomCheckpoint(Callback):
 
         acc = net.history[-1]["valid_acc"]
         epoch = len(net.history)
-        prefix = dataset_prefix(self.num_classes)
+        prefix = dataset_prefix(self.num_classes, self.task_tag)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         path = self.checkpoint_dir / f"{prefix}_best.pth"
@@ -74,17 +76,19 @@ class FeatureExtractorCheckpoint(Callback):
         num_classes: int,
         monitor: str = "valid_acc_best",
         exclude_prefix: str = "fc.",
+        task_tag: str = "",
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.num_classes = num_classes
         self.monitor = monitor
         self.exclude_prefix = exclude_prefix
+        self.task_tag = task_tag
 
     def on_epoch_end(self, net, **kwargs):
         if not net.history[-1].get(self.monitor, False):
             return
 
-        prefix = dataset_prefix(self.num_classes)
+        prefix = dataset_prefix(self.num_classes, self.task_tag)
         path = self.checkpoint_dir / f"{prefix}_feature_extractor.pth"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 

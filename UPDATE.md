@@ -320,3 +320,70 @@ src/
 - 每轮训练自动记录 `dur`（耗时，秒），可通过 `history['dur']` 获取
 - Q3 的 CIFAR-100 训练通过 `Q2.training.train_resnet()` 调用，Q3 仅保留迁移学习特有代码
 
+---
+
+## 2026-05-28: 输出路径重构 — 按作业隔离 + 搜索结果时间戳命名 + 任务标签区分
+
+### Added / 新增
+
+- `src/utils/config.py`:
+  - `make_run_dir(question, timestamp)`: 生成 `outputs/<question>/checkpoints/<timestamp>` 目录路径（参数从 `base` 改为 `question`）
+  - `make_search_dir(question)`: 生成 `outputs/<question>/search_results/` 搜索结果目录
+  - `find_best_search_result(search_dir, pattern)`: 扫描搜索结果目录，返回 `mean_test_score` 最高的 JSON 文件路径
+- `src/Q3/config.py`: `TrainConfig` 新增 `task_tag: str = ""` 字段，区分同类别数不同任务的检查点文件名
+- `src/Q3/transfer.py`: `load_transfer_search_params(specific_file)` — 从迁移搜索结果加载最优参数，支持扫描和指定文件
+
+### Changed / 变更
+
+- **输出目录结构**：从扁平 `checkpoints/<timestamp>/` 改为按作业隔离的 `outputs/Q{n}/`：
+  ```
+  outputs/
+  ├── Q3/
+  │   ├── checkpoints/<timestamp>/          # 检查点（训练、迁移、torchvision 迁移）
+  │   └── search_results/                    # 超参搜索结果
+  │       ├── <ts>_cifar100_hp_search.json
+  │       └── <ts>_transfer_hp_search.json
+  ├── Q2/
+  │   ├── checkpoints/<timestamp>/
+  │   └── search_results/
+  │       └── <ts>_cifar10_hp_search.json
+  └── Q1/
+  ```
+- **搜索结果文件名**：从固定的 `hp_search_results.json` 改为时间戳命名 `<timestamp>_<suffix>.json`
+  - CIFAR-100 训练搜索: `*_cifar100_hp_search.json`
+  - CIFAR-100→10 迁移搜索: `*_transfer_hp_search.json`
+  - CIFAR-10 训练搜索 (Q2): `*_cifar10_hp_search.json`
+- **搜索结果加载**：默认扫描搜索目录选最优（`mean_test_score` 最高的文件），新增 `--search-results` CLI 参数支持指定具体文件
+- **检查点文件名任务标签**：`dataset_prefix(num_classes, task)` 新增 `task` 参数
+  - CIFAR-100 训练: `resnet18_cifar100_best.pth`（不变）
+  - CIFAR-100→10 迁移: `resnet18_cifar10_transfer_best.pth`
+  - torchvision→10 迁移: `resnet18_cifar10_tvtransfer_best.pth`
+- **默认路径更新**：
+  - `TrainConfig.checkpoint_dir` → `outputs/Q3/checkpoints`
+  - `TransferConfig.checkpoint_dir` → `outputs/Q3/checkpoints`
+  - `TransferConfig.source_checkpoint` → `outputs/Q3/checkpoints`（改为目录，运行时自动发现最优）
+  - `TorchvisionTransferConfig.checkpoint_dir` → `outputs/Q3/checkpoints`
+  - `Q2TrainConfig.checkpoint_dir` → `outputs/Q2/checkpoints`
+
+### Modified Files / 修改文件清单
+
+| 文件 | 改动 |
+|---|---|
+| `.gitignore` | `checkpoints/` → `outputs/` |
+| `src/utils/config.py` | `make_run_dir` 改 `question` 参数；新增 `make_search_dir`、`find_best_search_result`；`dataset_prefix` 加 `task` 参数 |
+| `src/utils/search.py` | `_save_search_results` 改 `search_dir` + 时间戳文件名；`load_best_search_params` 改 `search_dir`/`pattern`/`specific_file`；`run_search` 参数 `checkpoint_dir` → `search_dir` + `suffix` |
+| `src/utils/callbacks.py` | `CustomCheckpoint` 和 `FeatureExtractorCheckpoint` 新增 `task_tag` 参数 |
+| `src/utils/net.py` | `create_classifier_net` 传递 `task_tag` 给回调 |
+| `src/Q3/config.py` | 默认路径 → `outputs/Q3/`；`TrainConfig` 新增 `task_tag`；`TransferConfig.source_checkpoint` 改为目录 |
+| `src/Q3/checkpoint.py` | `save_best_checkpoint`/`save_feature_extractor` 使用 `config.task_tag` |
+| `src/Q3/search.py` | `_save_search_results` → `make_search_dir("Q3")` + `_cifar100_hp_search.json`；`load_best_search_params` 改 `specific_file` 参数 |
+| `src/Q3/transfer.py` | `find_best_cifar100_checkpoint` 默认 `outputs/Q3/checkpoints`；`_save_transfer_search_results` → `_transfer_hp_search.json`；新增 `load_transfer_search_params`；`_to_train_config` 设置 `task_tag="transfer"` |
+| `src/Q3/torchvision_transfer.py` | `_to_train_config` 设置 `task_tag="tvtransfer"` |
+| `src/Q3/main.py` | `make_run_dir("Q3", ts)`；新增 `--search-results` CLI；迁移分支支持 `specific_file` 加载 |
+| `src/Q2/config.py` | 默认路径 → `outputs/Q2/checkpoints` |
+| `src/Q2/search.py` | `search_dir=make_search_dir("Q2")`, `suffix="cifar10_hp_search"`；`load_q2_best_params` 改 `specific_file` |
+| `src/Q3/tests/test_run_dirs.py` | 适配 `make_run_dir(question)` 签名；新增 `task_tag` 测试 |
+| `src/Q3/tests/test_search.py` | 适配 `load_best_search_params(specific_file=...)` 签名；新增 `specific_file` 和空目录测试 |
+| 三个 README | 路径引用更新 |
+| `EXPERIENCE.md` | 新增 `dataset_prefix(task_tag)` 经验 |
+

@@ -34,6 +34,11 @@ from sklearn.model_selection import (
 from torchvision import datasets
 
 from .config import SearchConfig, TrainConfig
+from utils.config import (
+    generate_timestamp,
+    make_search_dir,
+    find_best_search_result,
+)
 from Q2.model import ResNet18
 
 
@@ -180,15 +185,20 @@ def _build_param_grid(search_cfg: SearchConfig) -> dict:
 
 def _save_search_results(
     search_obj,
-    config: TrainConfig,
     search_cfg: SearchConfig,
+    suffix: str = "cifar100_hp_search",
 ) -> Path:
     """
     将 sklearn 搜索结果保存为 JSON。
     Save sklearn search results to JSON.
+
+    文件名格式：<timestamp>_<suffix>.json
+    保存到 outputs/Q3/search_results/。
     """
-    config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    path = config.checkpoint_dir / "hp_search_results.json"
+    search_dir = make_search_dir("Q3")
+    search_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = generate_timestamp()
+    path = search_dir / f"{timestamp}_{suffix}.json"
 
     cv_results = search_obj.cv_results_
 
@@ -250,18 +260,31 @@ def _save_search_results(
 
 
 def load_best_search_params(
-    config: TrainConfig,
+    specific_file: Path | None = None,
 ) -> dict[str, object] | None:
     """
-    从 hp_search_results.json 加载最优超参数（映射为 TrainConfig 字段名）。
-    Load best params from JSON, mapped to TrainConfig field names.
+    从搜索结果加载最优超参数（映射为 TrainConfig 字段名）。
+    Load best params from search results, mapped to TrainConfig field names.
 
-    Returns None if file doesn't exist.
-    文件不存在时返回 None。
+    如果指定 specific_file 则直接加载；
+    否则扫描 outputs/Q3/search_results/*_cifar100_hp_search.json
+    选 mean_test_score 最高的。
+
+    Returns None if no matching file found.
     """
-    path = config.checkpoint_dir / "hp_search_results.json"
-    if not path.exists():
-        return None
+    if specific_file is not None:
+        path = specific_file
+        if not path.exists():
+            return None
+    else:
+        search_dir = make_search_dir("Q3")
+        path = find_best_search_result(
+            search_dir,
+            pattern="*_cifar100_hp_search.json",
+        )
+        if path is None:
+            return None
+
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     # 映射 skorch 参数名 → TrainConfig 字段名，过滤不属于 TrainConfig 的参数
@@ -366,9 +389,7 @@ def run_search(
     searcher.fit(X, y)
 
     # 保存结果 / Save results
-    results_path = _save_search_results(
-        searcher, config, search_cfg
-    )
+    results_path = _save_search_results(searcher, search_cfg)
 
     # 输出摘要 / Print summary
     print("\n" + "=" * 60)

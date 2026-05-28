@@ -68,7 +68,7 @@ def save_best_checkpoint(
     """
     Save best model checkpoint / 保存最佳模型检查点。
     """
-    prefix = dataset_prefix(config.num_classes)
+    prefix = dataset_prefix(config.num_classes, config.task_tag)
     filename = f"{prefix}_best.pth"
     return save_full_checkpoint(
         model, optimizer, epoch, accuracy, config, filename,
@@ -90,7 +90,7 @@ def save_feature_extractor(
         model.load_state_dict(state, strict=False)
     """
     if filename is None:
-        prefix = dataset_prefix(config.num_classes)
+        prefix = dataset_prefix(config.num_classes, config.task_tag)
         filename = f"{prefix}_feature_extractor.pth"
     _ensure_dir(config.checkpoint_dir)
     path = config.checkpoint_dir / filename

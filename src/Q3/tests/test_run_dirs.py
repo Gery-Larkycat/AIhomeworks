@@ -9,8 +9,8 @@ save_best_checkpoint / save_feature_extractor 动态文件名。
 """
 
 import re
+from pathlib import Path
 
-import pytest
 import torch
 from torch.optim import SGD
 
@@ -59,22 +59,24 @@ class TestMakeRunDir:
     def test_with_explicit_timestamp(self):
         """显式时间戳正确拼接。"""
         run_dir = make_run_dir(
-            base=make_run_dir.__defaults__[0],
+            question="Q3",
             timestamp="2026-05-24_143022",
         )
         assert run_dir.name == "2026-05-24_143022"
+        assert "Q3" in str(run_dir)
 
-    def test_default_base(self):
-        """默认 base 为 checkpoints。"""
+    def test_default_question(self):
+        """默认 question 为 Q3，base 为 outputs/Q3/checkpoints。"""
         run_dir = make_run_dir(timestamp="2026-05-24_143022")
         assert run_dir.parent.name == "checkpoints"
+        assert run_dir.parent.parent.name == "Q3"
 
-    def test_custom_base(self, tmp_path):
-        """自定义 base 路径。"""
+    def test_custom_question(self):
+        """自定义 question 路径。"""
         run_dir = make_run_dir(
-            base=tmp_path, timestamp="2026-05-24_143022",
+            question="Q2", timestamp="2026-05-24_143022",
         )
-        assert run_dir == tmp_path / "2026-05-24_143022"
+        assert run_dir == Path("outputs/Q2/checkpoints/2026-05-24_143022")
 
     def test_auto_timestamp(self):
         """不传 timestamp 时自动生成。"""
@@ -185,3 +187,37 @@ class TestTimestampedCheckpointFilenames:
         )
         assert path.parent == run_dir
         assert run_dir.exists()
+
+    def test_transfer_task_tag(self, tmp_path):
+        """task_tag 非空时文件名含任务标签。"""
+        from src.Q3.checkpoint import save_best_checkpoint
+
+        config = TrainConfig(
+            num_classes=10,
+            checkpoint_dir=tmp_path,
+            task_tag="transfer",
+        )
+        model = ResNet18(num_classes=10)
+        optimizer = SGD(model.parameters(), lr=0.01)
+
+        path = save_best_checkpoint(
+            model, optimizer, epoch=1, accuracy=0.5, config=config,
+        )
+        assert path.name == "resnet18_cifar10_transfer_best.pth"
+
+    def test_tvtransfer_task_tag(self, tmp_path):
+        """torchvision 迁移 task_tag 文件名。"""
+        from src.Q3.checkpoint import save_best_checkpoint
+
+        config = TrainConfig(
+            num_classes=10,
+            checkpoint_dir=tmp_path,
+            task_tag="tvtransfer",
+        )
+        model = ResNet18(num_classes=10)
+        optimizer = SGD(model.parameters(), lr=0.01)
+
+        path = save_best_checkpoint(
+            model, optimizer, epoch=1, accuracy=0.5, config=config,
+        )
+        assert path.name == "resnet18_cifar10_tvtransfer_best.pth"

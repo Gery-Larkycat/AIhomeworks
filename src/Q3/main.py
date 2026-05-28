@@ -162,6 +162,13 @@ def parse_args() -> argparse.Namespace:
             " / 使用 PyTorch 预训练模型迁移学习"
         ),
     )
+    parser.add_argument(
+        "--search-results", type=str, default=None,
+        help=(
+            "Specify search results file"
+            " / 指定超参搜索结果文件路径"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -223,7 +230,7 @@ def _run_torchvision_transfer(
 
     # 时间戳运行目录 / Timestamped run dir
     timestamp = generate_timestamp()
-    run_dir = make_run_dir(timestamp=timestamp)
+    run_dir = make_run_dir("Q3", timestamp=timestamp)
     print(f"Run directory: {run_dir}")
 
     # 构建配置 / Build config
@@ -260,7 +267,7 @@ def _run_torchvision_transfer(
     model = load_torchvision_pretrained(config.num_classes)
     model = model.to(device)
 
-    prefix = dataset_prefix(config.num_classes)
+    prefix = dataset_prefix(config.num_classes, "tvtransfer")
     best_path = run_dir / f"{prefix}_best.pth"
     if best_path.exists():
         load_full_checkpoint(best_path, model)
@@ -356,12 +363,13 @@ def _run_transfer(args: argparse.Namespace) -> None:
         freeze_backbone,
         run_transfer,
         run_transfer_search,
+        load_transfer_search_params,
         _to_train_config,
     )
 
     # 生成时间戳运行目录 / Generate timestamped run dir
     timestamp = generate_timestamp()
-    run_dir = make_run_dir(timestamp=timestamp)
+    run_dir = make_run_dir("Q3", timestamp=timestamp)
     print(f"Run directory: {run_dir}")
 
     # 构建 TransferConfig / Build TransferConfig
@@ -416,6 +424,20 @@ def _run_transfer(args: argparse.Namespace) -> None:
         run_transfer_search(config)
         return
 
+    # 从指定文件加载搜索结果 / Load search results from file
+    if args.search_results:
+        specific = Path(args.search_results)
+        best_params = load_transfer_search_params(
+            specific_file=specific,
+        )
+        if best_params is not None:
+            config = dataclasses.replace(config, **best_params)
+            print(
+                f"\nLoaded transfer search params from: {specific}"
+            )
+            for k, v in best_params.items():
+                print(f"  {k}: {v}")
+
     # 运行迁移学习（含可选搜索）/ Run transfer (with optional search)
     history = run_transfer(
         config, search=args.search,
@@ -440,7 +462,9 @@ def _run_transfer(args: argparse.Namespace) -> None:
 
     # 加载最佳检查点 / Load best checkpoint
     from src.Q3.checkpoint import load_full_checkpoint
-    prefix = dataset_prefix(config.num_classes)
+    prefix = dataset_prefix(
+        config.num_classes, train_config.task_tag,
+    )
     best_path = train_config.checkpoint_dir / f"{prefix}_best.pth"
     if best_path.exists():
         load_full_checkpoint(best_path, model)
@@ -517,7 +541,7 @@ def main() -> None:
     # 生成时间戳运行目录 / Generate timestamped run dir
     from src.Q3.config import generate_timestamp, make_run_dir
     timestamp = generate_timestamp()
-    run_dir = make_run_dir(timestamp=timestamp)
+    run_dir = make_run_dir("Q3", timestamp=timestamp)
 
     config = build_config(args, checkpoint_dir=run_dir)
 
@@ -588,7 +612,13 @@ def main() -> None:
         # 自动加载已有搜索结果（如果存在）
         from src.Q3.search import load_best_search_params
 
-        best_params = load_best_search_params(config)
+        specific = (
+            Path(args.search_results)
+            if args.search_results else None
+        )
+        best_params = load_best_search_params(
+            specific_file=specific,
+        )
         if best_params is not None:
             config = dataclasses.replace(
                 config, **best_params

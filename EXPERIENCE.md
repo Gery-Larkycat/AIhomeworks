@@ -37,7 +37,7 @@
 - **时间戳目录避免覆盖**：检查点文件名硬编码（如 `resnet18_cifar100_best.pth`）导致新训练覆盖旧结果。用 `YYYY-MM-DD_HHMMSS` 格式子目录隔离每次运行，格式不含冒号（Windows 目录名安全）。
 - **frozen dataclass 的时间戳注入**：`TrainConfig` / `TransferConfig` 是 frozen dataclass，不能在构造后修改 `checkpoint_dir`。必须在 `main.py` 构造前生成时间戳，通过 `dataclasses.replace()` 注入。
 - **自动选基础模型按准确率而非最新**：迁移学习选源模型时，应比较各运行的 `accuracy` 字段（存在检查点中），而非简单选最新的。同准确率时才按时间戳取最新。
-- **数据集感知文件名**：同一时间戳目录内，CIFAR-100 和 CIFAR-10 的检查点通过 `dataset_prefix(num_classes)` 生成不同前缀（`resnet18_cifar100_*` vs `resnet18_cifar10_*`），避免混淆。
+- **数据集感知文件名**：同一时间戳目录内，CIFAR-100 和 CIFAR-10 的检查点通过 `dataset_prefix(num_classes, task_tag)` 生成不同前缀。`task_tag` 区分同类别数不同任务：CIFAR-100→10 迁移用 `"transfer"` → `resnet18_cifar10_transfer`，torchvision→10 迁移用 `"tvtransfer"` → `resnet18_cifar10_tvtransfer`，避免两种迁移学习产物混淆。
 
 ## Torchvision Pretrained Transfer / PyTorch 预训练迁移学习
 

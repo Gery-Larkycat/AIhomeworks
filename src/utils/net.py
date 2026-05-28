@@ -177,6 +177,7 @@ def create_classifier_net(
             CustomCheckpoint(
                 checkpoint_dir=config.checkpoint_dir,
                 num_classes=config.num_classes,
+                task_tag=getattr(config, "task_tag", ""),
             ),
         ),
         # 训练历史 JSON 保存
@@ -194,6 +195,7 @@ def create_classifier_net(
                 FeatureExtractorCheckpoint(
                     checkpoint_dir=config.checkpoint_dir,
                     num_classes=config.num_classes,
+                    task_tag=getattr(config, "task_tag", ""),
                 ),
             )
         )

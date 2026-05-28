@@ -161,18 +161,14 @@ class TestResultLogging:
     """Test JSON result loading."""
 
     def test_load_nonexistent_returns_none(self, tmp_path):
-        """不存在的文件返回 None。"""
-        config = dataclasses.replace(
-            TrainConfig(), checkpoint_dir=tmp_path
+        """不存在的 specific_file 返回 None。"""
+        result = load_best_search_params(
+            specific_file=tmp_path / "nonexistent.json",
         )
-        result = load_best_search_params(config)
         assert result is None
 
     def test_load_roundtrip(self, tmp_path):
         """写入 JSON 后能正确读回映射后的参数。"""
-        config = dataclasses.replace(
-            TrainConfig(), checkpoint_dir=tmp_path
-        )
         results = {
             "search_config": {"strategy": "random"},
             "best": {
@@ -186,11 +182,11 @@ class TestResultLogging:
             },
             "all_candidates": [],
         }
-        path = tmp_path / "hp_search_results.json"
+        path = tmp_path / "2026-05-27_143022_cifar100_hp_search.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(results, f)
 
-        loaded = load_best_search_params(config)
+        loaded = load_best_search_params(specific_file=path)
         assert loaded is not None
         assert loaded["learning_rate"] == 0.05
         assert loaded["momentum"] == 0.92
@@ -199,9 +195,7 @@ class TestResultLogging:
 
     def test_load_filters_invalid_fields(self, tmp_path):
         """max_epochs (halving resource) 被过滤，不会导致 replace 报错。"""
-        config = dataclasses.replace(
-            TrainConfig(), checkpoint_dir=tmp_path
-        )
+        config = TrainConfig()
         results = {
             "search_config": {"strategy": "halving-random"},
             "best": {
@@ -210,21 +204,50 @@ class TestResultLogging:
                     "optimizer__momentum": 0.92,
                     "optimizer__weight_decay": 3e-4,
                     "batch_size": 256,
-                    "max_epochs": 18,  # HalvingRandomSearchCV 的 resource 参数
+                    "max_epochs": 18,  # halving resource 参数
                 },
                 "mean_test_score": 0.35,
             },
             "all_candidates": [],
         }
-        path = tmp_path / "hp_search_results.json"
+        path = tmp_path / "2026-05-27_143022_cifar100_hp_search.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(results, f)
 
-        loaded = load_best_search_params(config)
+        loaded = load_best_search_params(specific_file=path)
         assert loaded is not None
         assert "max_epochs" not in loaded
         # 可以安全传给 dataclasses.replace
         dataclasses.replace(config, **loaded)
+
+    def test_load_specific_file(self, tmp_path):
+        """指定 specific_file 时直接加载该文件。"""
+        results = {
+            "search_config": {"strategy": "random"},
+            "best": {
+                "params": {
+                    "lr": 0.03,
+                    "optimizer__momentum": 0.95,
+                    "optimizer__weight_decay": 1e-4,
+                    "batch_size": 128,
+                },
+                "mean_test_score": 0.40,
+            },
+            "all_candidates": [],
+        }
+        path = tmp_path / "specific_results.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(results, f)
+
+        loaded = load_best_search_params(specific_file=path)
+        assert loaded is not None
+        assert loaded["learning_rate"] == 0.03
+
+    def test_load_no_args_returns_none(self):
+        """无参数且搜索目录为空时返回 None。"""
+        # outputs/Q3/search_results/ 不存在或为空
+        result = load_best_search_params()
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

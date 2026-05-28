@@ -4,10 +4,11 @@ Q2 hyperparameter search: CIFAR-10 data preparation + generic search.
 """
 
 import dataclasses
+from pathlib import Path
 
 from torchvision import datasets
 
-from utils.config import SearchConfig
+from utils.config import SearchConfig, make_search_dir
 from utils.search import (
     load_best_search_params,
     prepare_search_data,
@@ -52,12 +53,28 @@ def run_q2_search(
             "dropout_rate": config.dropout_rate,
         },
         search_cfg=search_cfg,
-        checkpoint_dir=config.checkpoint_dir,
+        search_dir=make_search_dir("Q2"),
         num_workers=config.num_workers,
+        suffix="cifar10_hp_search",
     )
 
 
-def load_q2_best_params(config: Q2TrainConfig) -> dict | None:
-    """加载 Q2 最优搜索参数（映射为 Q2TrainConfig 字段名）。"""
-    result = load_best_search_params(config.checkpoint_dir, _VALID_Q2_FIELDS)
+def load_q2_best_params(
+    specific_file: Path | None = None,
+) -> dict | None:
+    """
+    加载 Q2 最优搜索参数（映射为 Q2TrainConfig 字段名）。
+    默认扫描 outputs/Q2/search_results/*_cifar10_hp_search.json。
+    """
+    search_dir = make_search_dir("Q2")
+    result = load_best_search_params(
+        search_dir,
+        valid_fields=_VALID_Q2_FIELDS,
+        pattern="*_cifar10_hp_search.json",
+        specific_file=(
+            Path(specific_file)
+            if isinstance(specific_file, str)
+            else specific_file
+        ),
+    )
     return result

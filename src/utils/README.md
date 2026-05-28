@@ -38,8 +38,10 @@ utils/
 **辅助函数**：
 
 - `generate_timestamp()` → `"YYYY-MM-DD_HHMMSS"` 格式时间戳（Windows 安全无冒号）
-- `make_run_dir(base, timestamp)` → 构造 `checkpoints/<timestamp>` 运行目录路径
-- `dataset_prefix(num_classes)` → 检查点文件名前缀（100 → `resnet18_cifar100`，10 → `resnet18_cifar10`）
+- `make_run_dir(base, timestamp, question)` → 构造 `outputs/<question>/checkpoints/<timestamp>` 运行目录路径，`question` 为题目编号（如 `"Q3"`）
+- `make_search_dir(question)` → 构造 `outputs/<question>/search_results/` 搜索结果目录路径
+- `find_best_search_result(search_dir, pattern)` → 扫描搜索结果目录，返回匹配 `pattern` 的最优 JSON 文件路径
+- `dataset_prefix(num_classes, task="")` → 检查点文件名前缀（100 → `resnet18_cifar100`，10 → `resnet18_cifar10`，`task` 非空时追加后缀如 `resnet18_cifar10_transfer`）
 
 ---
 
@@ -124,7 +126,7 @@ skorch 内置 `Checkpoint` 不保存 accuracy/epoch/num_classes 元数据，迁�
 
 ### `visualize.py` — 可视化
 
-生成三张图到 `checkpoints/plots/` 目录（或指定 `save_dir`）。
+生成三张图到 `outputs/<question>/plots/` 目录（或指定 `save_dir`）。
 
 - `plot_training_curves(history, save_dir)` — 左图 loss 曲线、右图 accuracy 曲线
 - `plot_confusion_matrix(cm, save_dir, title, max_labels)` — 热力图（蓝色色阶）
@@ -141,8 +143,8 @@ Windows CJK 字体兼容（SimHei / Microsoft YaHei）。
 **公共 API**：
 
 - `prepare_search_data(dataset, mean, std)` → `(X, y)`：torchvision Dataset 转归一化 numpy 数组
-- `run_search(X, y, model_class, model_kwargs, search_cfg, checkpoint_dir, num_workers)` → `dict`：执行搜索并返回映射后的最优参数
-- `load_best_search_params(checkpoint_dir, valid_fields)` → `dict | None`：从 JSON 加载最优参数
+- `run_search(X, y, model_class, model_kwargs, search_cfg, search_dir, suffix, num_workers)` → `dict`：执行搜索并返回映射后的最优参数，结果保存为 `<timestamp>_<suffix>.json` 到 `search_dir`
+- `load_best_search_params(search_dir, pattern, valid_fields, specific_file=None)` → `dict | None`：从搜索结果目录加载最优参数，`pattern` 用于匹配文件名，`specific_file` 可指定精确文件
 
 **搜索空间**（硬编码，适用于 ResNet-18）：
 - `lr`: loguniform(1e-4, 1.0)

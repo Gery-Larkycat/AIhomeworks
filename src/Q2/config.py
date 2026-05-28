@@ -3,7 +3,6 @@ Q2 训练配置：ResNet-18 CIFAR-10。
 Training configuration for ResNet-18 on CIFAR-10.
 """
 
-import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,9 +10,6 @@ from utils.config import (
     AugmentationConfig,
     CIFAR10_MEAN,
     CIFAR10_STD,
-    SearchConfig,
-    generate_timestamp,
-    make_run_dir,
 )
 
 
@@ -26,7 +22,7 @@ class Q2TrainConfig:
 
     # -- Paths / 路径 --
     data_root: Path = Path("data")
-    checkpoint_dir: Path = Path("checkpoints")
+    checkpoint_dir: Path = Path("outputs/Q2/checkpoints")
 
     # -- Model / 模型 --
     num_classes: int = 10

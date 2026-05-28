@@ -171,7 +171,7 @@ src/
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `data_root` | `"data"` | CIFAR-100 数据存放路径 |
-| `checkpoint_dir` | `"checkpoints"` | 检查点保存路径（运行时覆盖为时间戳子目录） |
+| `checkpoint_dir` | `"outputs/Q3/checkpoints"` | 检查点保存路径（运行时覆盖为时间戳子目录） |
 | `num_classes` | `100` | 分类数（CIFAR-100=100） |
 | `dropout_rate` | `0.5` | FC 前 Dropout 比率（0=禁用） |
 | `batch_size` | `1024` | 批大小 |
@@ -193,22 +193,22 @@ src/
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `source_checkpoint` | `checkpoints/resnet18_cifar100_best.pth` | 源模型路径（运行时自动发现覆盖） |
+| `source_checkpoint` | `outputs/Q3/checkpoints/resnet18_cifar100_best.pth` | 源模型路径（运行时自动发现覆盖） |
 | `source_num_classes` | `100` | 源模型类别数 |
 | `num_classes` | `10` | 目标类别数（CIFAR-10） |
 | `mean` / `std` | CIFAR-10 统计量 | `(0.4914, 0.4822, 0.4465)` / `(0.2470, 0.2435, 0.2616)` |
 | `batch_size` | `256` | FC-only 微调用较小 batch |
 | `epochs` | `30` | 迁移训练轮数 |
 | `learning_rate` | `0.01` | FC-only 用较低学习率 |
-| `checkpoint_dir` | `"checkpoints"` | 运行时覆盖为时间戳子目录 |
+| `checkpoint_dir` | `"outputs/Q3/checkpoints"` | 运行时覆盖为时间戳子目录 |
 
 **辅助函数**：
 
 | 函数 | 用途 |
 |---|---|
 | `generate_timestamp()` | 生成 `YYYY-MM-DD_HHMMSS` 时间戳（Windows 安全无冒号） |
-| `make_run_dir(base, timestamp)` | 构造 `checkpoints/<timestamp>` 运行目录 |
-| `dataset_prefix(num_classes)` | 返回检查点文件名前缀（100→`resnet18_cifar100`，10→`resnet18_cifar10`） |
+| `make_run_dir(base, timestamp)` | 构造 `outputs/Q3/checkpoints/<timestamp>` 运行目录 |
+| `dataset_prefix(num_classes, task)` | 返回检查点文件名前缀，`task` 非空时追加后缀（如 `resnet18_cifar10_transfer`） |
 
 **AugmentationConfig** — 数据增强配置（详见第 5 节）：
 
@@ -246,7 +246,7 @@ src/
 | `learning_rate` | `0.01` | 较低学习率，避免破坏预训练特征 |
 | `weight_decay` | `1e-4` | 比全量训练小 |
 | `label_smoothing` | `0.0` | 迁移学习样本少，避免过度正则化 |
-| `checkpoint_dir` | `"checkpoints"` | 运行时覆盖为时间戳子目录 |
+| `checkpoint_dir` | `"outputs/Q3/checkpoints"` | 运行时覆盖为时间戳子目录 |
 
 ### 3.2 `Q2/model.py` — 网络模型（从 Q3 移入）
 
@@ -335,7 +335,7 @@ CIFAR-100 训练已从手写 `train()` 循环迁移到 skorch `ClassifierNet(Neu
 
 检查点管理保留在 Q3 供迁移学习模块使用。skorch 训练管线的检查点通过 `utils/callbacks.py` 的 `CustomCheckpoint` 处理。
 
-保存三种产物，文件名通过 `dataset_prefix(num_classes)` 动态生成：
+保存三种产物，文件名通过 `dataset_prefix(num_classes, task_tag)` 动态生成：
 
 | 文件 | 内容 | 用途 |
 |---|---|---|
@@ -343,9 +343,15 @@ CIFAR-100 训练已从手写 `train()` 循环迁移到 skorch `ClassifierNet(Neu
 | `<prefix>_feature_extractor.pth` | 去掉 `fc.` 的 state_dict | 迁移学习（旧方案保留） |
 | `training_history.json` | 每 epoch 的 loss/acc/lr 列表 | 训练分析 |
 
-其中 `<prefix>` 由 `dataset_prefix()` 返回：100 类 → `resnet18_cifar100`，10 类 → `resnet18_cifar10`。
+其中 `<prefix>` 由 `dataset_prefix()` 返回，`task_tag` 区分不同任务：
 
-**运行隔离**：每次训练的产物存入独立的时间戳子目录 `checkpoints/YYYY-MM-DD_HHMMSS/`，不同运行互不覆盖。`checkpoint_dir` 在 `main.py` 构建配置时注入。
+| 任务 | task_tag | 前缀 |
+|---|---|---|
+| CIFAR-100 训练 | `""` | `resnet18_cifar100` |
+| CIFAR-100→10 迁移 | `"transfer"` | `resnet18_cifar10_transfer` |
+| torchvision→10 迁移 | `"tvtransfer"` | `resnet18_cifar10_tvtransfer` |
+
+**运行隔离**：每次训练的产物存入独立的时间戳子目录 `outputs/Q3/checkpoints/YYYY-MM-DD_HHMMSS/`，不同运行互不覆盖。`checkpoint_dir` 在 `main.py` 构建配置时注入。
 
 特征提取器的提取逻辑：遍历 model 的 `state_dict()`，过滤掉所有以 `"fc."` 开头的 key。这样得到的权重只包含 stem + 4 组残差层的参数（特征提取部分），不包含分类头。
 
@@ -353,7 +359,7 @@ CIFAR-100 训练已从手写 `train()` 循环迁移到 skorch `ClassifierNet(Neu
 
 可视化模块已移至 `utils/visualize.py`。
 
-生成三张图到 `checkpoints/plots/` 目录：
+生成三张图到 `outputs/Q3/checkpoints/<timestamp>/plots/` 目录：
 
 - **`training_curves.png`**：左图 loss 曲线（train/test），右图 accuracy 曲线（train/test）
 - **`confusion_matrix.png`**：100×100 热力图（蓝色色阶）
@@ -612,10 +618,10 @@ for name, param in model.named_parameters():
 
 ### 6.3 自动选最优基础模型
 
-`find_best_cifar100_checkpoint()` 自动从 `checkpoints/` 下所有时间戳运行目录中扫描，读取每个检查点的 `accuracy` 字段，选择 CIFAR-100 准确率最高的模型作为迁移基础。同准确率时取最新的运行。
+`find_best_cifar100_checkpoint()` 自动从 `outputs/Q3/checkpoints/` 下所有时间戳运行目录中扫描，读取每个检查点的 `accuracy` 字段，选择 CIFAR-100 准确率最高的模型作为迁移基础。同准确率时取最新的运行。
 
 - `--transfer` 不指定 `--transfer-checkpoint` 时自动调用
-- 回退兼容旧的平面 `checkpoints/` 目录结构
+- 回退兼容旧的平面 `outputs/Q3/checkpoints/` 目录结构
 - 找不到任何检查点时打印提示并退出
 
 ### 6.4 配置转换
@@ -750,7 +756,7 @@ X, y = _prepare_search_data(config)
 
 ### 7.5 输出文件
 
-CIFAR-100 搜索结果保存为 `checkpoints/<timestamp>/hp_search_results.json`，迁移搜索保存为 `checkpoints/<timestamp>/transfer_hp_search_results.json`：
+CIFAR-100 搜索结果保存为 `outputs/Q3/search_results/<timestamp>_cifar100_hp_search.json`，迁移搜索保存为 `outputs/Q3/search_results/<timestamp>_transfer_hp_search.json`：
 
 ```json
 {
@@ -794,7 +800,7 @@ PARAM_MAP = {
 
 ### 7.7 训练时自动加载
 
-`main.py` 默认检测当前运行目录下的 `hp_search_results.json`：
+`main.py` 默认检测 `outputs/Q3/search_results/` 下对应的搜索结果文件：
 - 文件存在 → 自动应用最优参数
 - `--ignore-search` → 忽略搜索结果
 
@@ -806,7 +812,7 @@ PARAM_MAP = {
 - 使用 `_TransferNetClassifier`（每次 fold 自动加载预训练权重 + 冻结 backbone）
 - 搜索空间更小（`lr` 上限 0.1，搜索 epochs max=10）
 - 数据为 CIFAR-10（`_prepare_cifar10_data()`）
-- 结果保存为 `transfer_hp_search_results.json`
+- 结果保存为 `outputs/Q3/search_results/<timestamp>_transfer_hp_search.json`
 
 通过 `--transfer --search` 或 `--transfer --search-only` 触发。
 
@@ -863,7 +869,7 @@ uv run python src/Q3/main.py --ignore-search
 uv run python src/Q3/main.py --transfer
 
 # 指定源检查点
-uv run python src/Q3/main.py --transfer --transfer-checkpoint checkpoints/2026-05-24_143022/resnet18_cifar100_best.pth
+uv run python src/Q3/main.py --transfer --transfer-checkpoint outputs/Q3/checkpoints/2026-05-24_143022/resnet18_cifar100_best.pth
 
 # 迁移 + 超参搜索
 uv run python src/Q3/main.py --transfer --search
@@ -898,35 +904,38 @@ uv run pytest src/Q3/tests/ -v
 每次训练自动创建时间戳隔离目录，产物结构如下：
 
 ```
-checkpoints/
-├── 2026-05-24_143022/                          # CIFAR-100 训练运行
-│   ├── resnet18_cifar100_best.pth              # 最佳完整模型
-│   ├── resnet18_cifar100_feature_extractor.pth # 特征提取器
-│   ├── training_history.json                   # 训练历史
-│   ├── hp_search_results.json                  # 超参数搜索结果（如有）
-│   └── plots/
-│       ├── training_curves.png                 # Loss/Accuracy 曲线
-│       ├── confusion_matrix.png                # 混淆矩阵
-│       └── lr_schedule.png                     # 学习率曲线
+outputs/Q3/
+├── checkpoints/
+│   ├── 2026-05-24_143022/                          # CIFAR-100 训练运行
+│   │   ├── resnet18_cifar100_best.pth              # 最佳完整模型
+│   │   ├── resnet18_cifar100_feature_extractor.pth # 特征提取器
+│   │   ├── training_history.json                   # 训练历史
+│   │   └── plots/
+│   │       ├── training_curves.png                 # Loss/Accuracy 曲线
+│   │       ├── confusion_matrix.png                # 混淆矩阵
+│   │       └── lr_schedule.png                     # 学习率曲线
+│   │
+│   ├── 2026-05-24_160000/                          # CIFAR-100→CIFAR-10 迁移运行
+│   │   ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
+│   │   ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
+│   │   ├── training_history.json                   # 训练历史
+│   │   └── plots/
+│   │       ├── training_curves.png
+│   │       ├── confusion_matrix.png
+│   │       └── lr_schedule.png
+│   │
+│   └── 2026-05-24_180000/                          # torchvision 预训练迁移运行
+│       ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
+│       ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
+│       ├── training_history.json                   # 训练历史
+│       └── plots/
+│           ├── training_curves.png
+│           ├── confusion_matrix.png
+│           └── lr_schedule.png
 │
-├── 2026-05-24_160000/                          # CIFAR-100→CIFAR-10 迁移运行
-│   ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
-│   ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
-│   ├── training_history.json                   # 训练历史
-│   ├── transfer_hp_search_results.json         # 迁移搜索结果（如有）
-│   └── plots/
-│       ├── training_curves.png
-│       ├── confusion_matrix.png
-│       └── lr_schedule.png
-│
-└── 2026-05-24_180000/                          # torchvision 预训练迁移运行
-    ├── resnet18_cifar10_best.pth               # 迁移后最佳模型
-    ├── resnet18_cifar10_feature_extractor.pth  # 迁移后特征提取器
-    ├── training_history.json                   # 训练历史
-    └── plots/
-        ├── training_curves.png
-        ├── confusion_matrix.png
-        └── lr_schedule.png
+└── search_results/
+    ├── 2026-05-24_143022_cifar100_hp_search.json    # CIFAR-100 超参数搜索结果（如有）
+    └── 2026-05-24_160000_transfer_hp_search.json    # 迁移搜索结果（如有）
 ```
 
 不同运行互不覆盖。`--transfer` 自动从所有运行中选 CIFAR-100 准确率最高的模型作为基础模型。`--tv-transfer` 直接使用 torchvision 官方预训练权重，无需先训练 CIFAR-100。
