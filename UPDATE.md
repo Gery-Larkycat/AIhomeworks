@@ -413,3 +413,43 @@ src/
 - Q2 新增 42 项测试，全部通过
 - 全套 196 项测试通过，无回归
 
+---
+
+## 2026-05-30: Q1 完成 — VGG-16 CIFAR-10 + BN 可配置
+
+### Added / 新增
+
+- `src/Q1/model.py`: **新建** — VGG-16 从零实现，适配 CIFAR 32×32
+  - CIFAR 适配：5 组卷积仅 Block 1/2/3 各跟 1 个 MaxPool（3→16→8→4），Block 4/5 无 MaxPool
+  - FC 简化为 2 层：Dropout → Linear(512, 512) → ReLU → Dropout → Linear(512, num_classes)
+  - `use_bn` 参数控制是否启用 BatchNorm
+  - Kaiming 正态初始化
+- `src/Q1/config.py`: `Q1TrainConfig` frozen dataclass（CIFAR-10 默认值，batch_size=256，新增 `use_bn`)
+- `src/Q1/data.py`: CIFAR-10 数据加载（Dataset + DataLoader）
+- `src/Q1/training.py`: `train_vgg()` — skorch 训练管线（传入 VGG16）
+- `src/Q1/search.py`: `run_q1_search()` + `load_q1_best_params()` — 超参搜索
+- `src/Q1/main.py`: CLI 入口（训练/搜索/评估/可视化），新增 `--no-bn` 参数
+- `src/Q1/tests/test_model.py`: 16 项测试（输出形状、参数量、梯度流、Dropout、use_bn 切换、空间维度、特征提取器）
+- `src/Q1/tests/test_config.py`: 16 项测试（默认值、不可变性、覆盖、replace）
+- `src/Q1/tests/test_data.py`: 6 项测试（数据集大小、批次形状、标签范围、归一化）
+- `src/Q1/tests/test_search.py`: 7 项测试（搜索结果加载/映射/过滤、SearchConfig）
+
+### Changed / 变更
+
+- `src/Q2/model.py`: `ResNet18` 和 `BasicBlock` 新增 `use_bn` 参数（默认 True），`use_bn=False` 时用 `nn.Identity()` 替代 `BatchNorm2d`
+- `src/Q2/config.py`: `Q2TrainConfig` 新增 `use_bn: bool = True` 字段
+- `README.md`: 修复重复"作业二"段落 + 作业一添加代码路径引用
+
+### Tests / 测试
+
+- Q1 新增 43 项测试，全部通过
+- 全套 239 项测试通过，Q2/Q3 无回归
+
+### Changed / 变更（检查点文件名模型感知）
+
+- `src/utils/config.py`: `dataset_prefix()` 新增 `model_name` 参数（默认 `"resnet18"`，向后兼容），Q1 传入 `"vgg16"` 后检查点文件名变为 `vgg16_cifar10_best.pth`
+- `src/utils/callbacks.py`: `CustomCheckpoint` 和 `FeatureExtractorCheckpoint` 新增 `model_name` 参数
+- `src/utils/net.py`: `create_classifier_net()` 从 config 取 `model_name` 传给回调
+- `src/Q1/config.py`: `Q1TrainConfig` 新增 `model_name: str = "vgg16"`
+- `src/Q2/config.py`: `Q2TrainConfig` 新增 `model_name: str = "resnet18"`
+

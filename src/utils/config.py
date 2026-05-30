@@ -225,18 +225,21 @@ def find_best_search_result(
     return candidates[0][1]
 
 
-def dataset_prefix(num_classes: int, task: str = "") -> str:
+def dataset_prefix(
+    num_classes: int, task: str = "", model_name: str = "resnet18",
+) -> str:
     """
     根据 num_classes 和任务类型返回检查点文件名前缀。
     Return checkpoint filename prefix based on num_classes and task.
 
     100 → resnet18_cifar100, 10 → resnet18_cifar10, 其他 → resnet18_Ncls。
     task 非空时追加下划线后缀：resnet18_cifar10_transfer。
+    model_name 替换前缀中的 resnet18：vgg16_cifar10。
     """
     if num_classes == 100:
-        base = "resnet18_cifar100"
+        base = f"{model_name}_cifar100"
     elif num_classes == 10:
-        base = "resnet18_cifar10"
+        base = f"{model_name}_cifar10"
     else:
-        base = f"resnet18_{num_classes}cls"
+        base = f"{model_name}_{num_classes}cls"
     return f"{base}_{task}" if task else base

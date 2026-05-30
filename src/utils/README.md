@@ -41,7 +41,7 @@ utils/
 - `make_run_dir(base, timestamp, question)` → 构造 `outputs/<question>/checkpoints/<timestamp>` 运行目录路径，`question` 为题目编号（如 `"Q3"`）
 - `make_search_dir(question)` → 构造 `outputs/<question>/search_results/` 搜索结果目录路径
 - `find_best_search_result(search_dir, pattern)` → 扫描搜索结果目录，返回匹配 `pattern` 的最优 JSON 文件路径
-- `dataset_prefix(num_classes, task="")` → 检查点文件名前缀（100 → `resnet18_cifar100`，10 → `resnet18_cifar10`，`task` 非空时追加后缀如 `resnet18_cifar10_transfer`）
+- `dataset_prefix(num_classes, task="", model_name="resnet18")` → 检查点文件名前缀（`model_name` 控制前缀模型名：`resnet18_cifar10` 或 `vgg16_cifar10`；`task` 非空时追加后缀如 `resnet18_cifar10_transfer`）
 
 ---
 

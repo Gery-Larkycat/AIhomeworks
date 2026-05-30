@@ -1,6 +1,6 @@
 """
-Q2 训练配置：ResNet-18 CIFAR-10。
-Training configuration for ResNet-18 on CIFAR-10.
+Q1 训练配置：VGG-16 CIFAR-10。
+Training configuration for VGG-16 on CIFAR-10.
 """
 
 from dataclasses import dataclass
@@ -14,24 +14,24 @@ from utils.config import (
 
 
 @dataclass(frozen=True)
-class Q2TrainConfig:
+class Q1TrainConfig:
     """
-    Q2 CIFAR-10 训练配置。不可变的冻结 dataclass。
-    Q2 CIFAR-10 training config. Immutable frozen dataclass.
+    Q1 CIFAR-10 训练配置。不可变的冻结 dataclass。
+    Q1 CIFAR-10 training config. Immutable frozen dataclass.
     """
 
     # -- Paths / 路径 --
     data_root: Path = Path("data")
-    checkpoint_dir: Path = Path("outputs/Q2/checkpoints")
+    checkpoint_dir: Path = Path("outputs/Q1/checkpoints")
 
     # -- Model / 模型 --
     num_classes: int = 10
     dropout_rate: float = 0.5
     use_bn: bool = True
-    model_name: str = "resnet18"
+    model_name: str = "vgg16"
 
     # -- Training / 训练超参数 --
-    batch_size: int = 128
+    batch_size: int = 256
     epochs: int = 200
     learning_rate: float = 0.1
     momentum: float = 0.9

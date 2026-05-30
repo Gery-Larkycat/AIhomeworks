@@ -68,3 +68,14 @@
 - **搜索模块分离数据准备和搜索逻辑**：`utils/search.run_search()` 接受预处理好的 numpy 数组，不关心数据来源。每个作业只需准备自己的数据然后调用通用搜索。
 - **`train.py` 保留给迁移学习**：迁移学习的训练流程（加载预训练权重→冻结 backbone→仅训练 FC）与标准训练不同，暂时保留旧的 `train()` 函数。后续可统一为 skorch 管线。
 - **pytest `pythonpath = ["src"]`**：将 `src/` 加入 Python 路径后，`Q2` 和 `utils` 可以直接 import，不再依赖 `sys.path.insert()`。
+
+## BN 可配置 / Configurable BatchNorm
+
+- **`use_bn` 作为模型构造参数**：VGG-16 和 ResNet-18 的 BN 层通过 `use_bn: bool = True` 参数控制。`use_bn=False` 时用 `nn.Identity()` 替代 `nn.BatchNorm2d`，而非条件跳过，保持前向传播路径不变。这样 state_dict 键名一致（Identity 不占参数），切换 BN 不影响权重加载。
+- **`model_name` 区分检查点文件名**：`dataset_prefix(num_classes, task, model_name)` 新增 `model_name` 参数。`Q1TrainConfig.model_name="vgg16"` 使检查点命名为 `vgg16_cifar10_best.pth`，`Q2TrainConfig.model_name="resnet18"` 保持 `resnet18_cifar10_best.pth`。通过 `getattr(config, "model_name", "resnet18")` 向后兼容 Q3 的 TrainConfig（无此字段）。
+
+## VGG-16 CIFAR 适配 / VGG-16 CIFAR Adaptation
+
+- **3 个 MaxPool 而非 5 个**：标准 VGG-16 有 5 个 MaxPool（224→112→56→28→14→7）。CIFAR-10 的 32×32 图像只需 3 个 MaxPool（32→16→8→4），Block 4/5 去掉 MaxPool 保留 4×4 空间信息。用 `AdaptiveAvgPool2d(1,1)` 统一到 1×1。
+- **FC 适度简化**：原始 VGG-16 FC 为 25088→4096→4096→1000。CIFAR 适配后特征仅 512 维（1×1×512），改为 2 层 FC：512→512→num_classes。保留多层结构但大幅减少参数。
+- **搜索结果后缀区分模型**：Q1 搜索用 `vgg16_cifar10_hp_search` 后缀，Q2 用 `cifar10_hp_search`，避免不同模型的搜索结果混淆。

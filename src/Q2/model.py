@@ -19,28 +19,36 @@ class BasicBlock(nn.Module):
     """
     Standard ResNet BasicBlock (two 3x3 conv layers).
     expansion=1 means in_channels == out_channels for each block group.
+
+    Args:
+        use_bn: 是否使用 BatchNorm（False 时用 Identity 替代）
     """
 
     expansion: int = 1
 
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
+    def __init__(
+        self, in_channels: int, out_channels: int,
+        stride: int = 1, use_bn: bool = True,
+    ) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(
             in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
         )
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.bn1 = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity()
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(
             out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.bn2 = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity()
 
         self.shortcut: nn.Module
         if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
+            shortcut_layers: list[nn.Module] = [
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
+            ]
+            if use_bn:
+                shortcut_layers.append(nn.BatchNorm2d(out_channels))
+            self.shortcut = nn.Sequential(*shortcut_layers)
         else:
             self.shortcut = nn.Identity()
 
@@ -59,17 +67,24 @@ class ResNet18(nn.Module):
     Stem: 3x3 conv stride=1, no maxpool (preserves 32x32 for CIFAR images)
     Layers: 4 groups of BasicBlock [2,2,2,2], channels 64→128→256→512
     Head: AdaptiveAvgPool2d → Dropout → Linear(512, num_classes)
+
+    Args:
+        num_classes:  分类数
+        dropout_rate: FC 前 Dropout 概率
+        use_bn:       是否使用 BatchNorm（False 时用 Identity 替代）
     """
 
     def __init__(
-        self, num_classes: int = 10, dropout_rate: float = 0.0, **kwargs
+        self, num_classes: int = 10, dropout_rate: float = 0.0,
+        use_bn: bool = True, **kwargs,
     ) -> None:
         super().__init__()
         self.in_channels = 64
+        self._use_bn = use_bn
 
         # Stem: 3x3 conv stride=1 instead of 7x7 stride=2 + maxpool
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = nn.BatchNorm2d(64) if use_bn else nn.Identity()
         self.relu = nn.ReLU(inplace=True)
 
         # Residual layer groups: [2,2,2,2] blocks, channels: 64→128→256→512
@@ -87,10 +102,10 @@ class ResNet18(nn.Module):
 
     def _make_layer(self, out_channels: int, num_blocks: int, stride: int) -> nn.Sequential:
         layers: list[nn.Module] = []
-        layers.append(BasicBlock(self.in_channels, out_channels, stride))
+        layers.append(BasicBlock(self.in_channels, out_channels, stride, use_bn=self._use_bn))
         self.in_channels = out_channels
         for _ in range(1, num_blocks):
-            layers.append(BasicBlock(out_channels, out_channels, stride=1))
+            layers.append(BasicBlock(out_channels, out_channels, stride=1, use_bn=self._use_bn))
         return nn.Sequential(*layers)
 
     def _initialize_weights(self) -> None:
@@ -114,9 +129,11 @@ class ResNet18(nn.Module):
         return out
 
 
-def create_model(num_classes: int = 10, dropout_rate: float = 0.0) -> ResNet18:
+def create_model(
+    num_classes: int = 10, dropout_rate: float = 0.0, use_bn: bool = True,
+) -> ResNet18:
     """Factory function: create a ResNet-18 instance."""
-    return ResNet18(num_classes=num_classes, dropout_rate=dropout_rate)
+    return ResNet18(num_classes=num_classes, dropout_rate=dropout_rate, use_bn=use_bn)
 
 
 def get_feature_extractor_state(model: ResNet18) -> OrderedDict[str, Any]:

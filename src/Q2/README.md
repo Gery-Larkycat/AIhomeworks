@@ -80,9 +80,10 @@ outputs/Q2/
 - 两个 3×3 卷积层 + 残差跳跃连接
 - `expansion=1`（ResNet-18 不使用 bottleneck）
 - shortcut：维度匹配时 `Identity`，否则 `1×1 conv + BN`
+- `use_bn=False` 时 BN 层替换为 `Identity`
 
 **`ResNet18(nn.Module)`**：
-- 构建参数：`num_classes`（默认 10）、`dropout_rate`（默认 0）
+- 构建参数：`num_classes`（默认 10）、`dropout_rate`（默认 0）、`use_bn`（默认 True）
 - 结构：stem → 4 组残差层 [2,2,2,2] → AdaptiveAvgPool2d → Dropout → FC
 - Kaiming 正态初始化（`fan_out`, `relu`）
 - 约 11.17M 参数（100 类时）
@@ -103,6 +104,8 @@ outputs/Q2/
 | `checkpoint_dir` | `Path("outputs/Q2/checkpoints")` | 检查点保存目录 / Checkpoint save dir |
 | `num_classes` | `10` | CIFAR-10 类别数 |
 | `dropout_rate` | `0.5` | FC 前 Dropout |
+| `use_bn` | `True` | 卷积后 BatchNorm |
+| `model_name` | `"resnet18"` | 检查点文件名前缀 |
 | `batch_size` | `128` | 批大小 |
 | `epochs` | `200` | 训练轮数 |
 | `learning_rate` | `0.1` | 初始学习率 |
