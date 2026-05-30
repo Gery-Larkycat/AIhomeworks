@@ -2,11 +2,11 @@
 Q2 CIFAR-10 数据加载。
 CIFAR-10 data loading for Q2.
 
-返回 Dataset（不是 DataLoader），由 skorch 训练器负责创建 DataLoader。
-Returns Datasets (not DataLoaders); skorch handles DataLoader creation.
+- get_cifar10_datasets: 返回 Dataset，由 skorch 训练器负责创建 DataLoader。
+- get_cifar10_loaders: 返回 DataLoader，供评估和可视化使用。
 """
 
-from pathlib import Path
+from torch.utils.data import DataLoader
 from torchvision import datasets
 
 from utils.augment import build_test_transforms, build_train_transforms
@@ -55,3 +55,38 @@ def get_cifar10_test_only(config):
         download=True,
         transform=test_transform,
     )
+
+
+def get_cifar10_loaders(config) -> tuple[DataLoader, DataLoader]:
+    """
+    创建 CIFAR-10 训练和测试 DataLoader。
+    Create CIFAR-10 train and test DataLoaders.
+
+    包装 get_cifar10_datasets + DataLoader 创建，供评估和可视化使用。
+    skorch 训练使用 Dataset 即可，但评估（per_class_accuracy、confusion_matrix）
+    需要 DataLoader。
+
+    Args:
+        config: 鸭子类型配置，需有 data_root, mean, std, augmentation,
+                batch_size, num_workers, pin_memory 字段
+
+    Returns:
+        (train_loader, test_loader)
+    """
+    train_ds, test_ds = get_cifar10_datasets(config)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+    )
+    return train_loader, test_loader

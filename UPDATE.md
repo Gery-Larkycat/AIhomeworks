@@ -387,3 +387,29 @@ src/
 | 三个 README | 路径引用更新 |
 | `EXPERIENCE.md` | 新增 `dataset_prefix(task_tag)` 经验 |
 
+---
+
+## 2026-05-29: Q2 完成 — main.py CLI 入口 + 测试
+
+### Added / 新增
+
+- `src/Q2/main.py`: **新建** — CLI 入口（~260 行）
+  - `parse_args()`: 命令行参数解析（epochs, batch-size, lr, dropout, search, search-only, search-strategy, ignore-search, search-results, amp, no-augmentation, eval-only）
+  - `build_config(args, checkpoint_dir)`: 从默认值 + CLI 覆盖 + 时间戳目录构建 Q2TrainConfig
+  - `main()`: 完整编排 — 数据加载 → 可选搜索 → 训练 → 评估（test loss/acc、每类准确率、混淆矩阵）→ 可视化（训练曲线、混淆矩阵、LR 曲线）
+  - 自动加载已有搜索结果，`--search-results` 指定具体文件
+- `src/Q2/data.py`: 新增 `get_cifar10_loaders(config)` → `(train_loader, test_loader)`，供评估和可视化使用
+- `src/Q2/tests/test_config.py`: **新建** — 27 项测试（默认值 17 + 不可变性 2 + 构造覆盖 3 + 默认路径 3 + replace 2）
+- `src/Q2/tests/test_data.py`: **新建** — 7 项测试（数据集大小、批次形状、标签范围、归一化、test_only）
+- `src/Q2/tests/test_search.py`: **新建** — 7 项测试（搜索结果加载/映射/过滤 4 + SearchConfig 3）
+
+### Changed / 变更
+
+- `src/Q2/README.md`: 全面更新 — 新增 main.py、get_cifar10_loaders、测试章节、CLI 用法示例
+- `README.md`: 作业二新增代码路径引用
+
+### Tests / 测试
+
+- Q2 新增 42 项测试，全部通过
+- 全套 196 项测试通过，无回归
+

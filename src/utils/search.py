@@ -242,7 +242,7 @@ def load_best_search_params(
         data = json.load(f)
 
     raw_params = data["best"]["params"]
-    mapped = {PARAM_MAP.get(k, k): v for k, v in raw_params.items()}
+    mapped = {PARAM_MAP[k]: v for k, v in raw_params.items() if k in PARAM_MAP}
     if valid_fields is not None:
         return {k: v for k, v in mapped.items() if k in valid_fields}
     return mapped
@@ -269,9 +269,11 @@ def _create_search_net(
     - 无 scheduler/augmentation/label_smoothing：搜索目的是找 optimizer 参数
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # skorch 要求模型构造参数带 module__ 前缀
+    prefixed_kwargs = {f"module__{k}": v for k, v in model_kwargs.items()}
     return NeuralNetClassifier(
         model_class,
-        **model_kwargs,
+        **prefixed_kwargs,
         criterion=nn.CrossEntropyLoss,
         optimizer=torch.optim.SGD,
         lr=0.1,
@@ -405,7 +407,7 @@ def run_search(
         print(f"    {k}: {v}")
     print(f"\n  Results saved to: {results_path}")
 
-    # 返回映射后的参数
+    # 返回映射后的参数（仅保留 PARAM_MAP 覆盖的搜索参数，
+    # 过滤 max_epochs 等 successive halving 内部参数）
     raw_params = searcher.best_params_
-    mapped = {PARAM_MAP.get(k, k): v for k, v in raw_params.items()}
-    return mapped
+    return {PARAM_MAP[k]: v for k, v in raw_params.items() if k in PARAM_MAP}
