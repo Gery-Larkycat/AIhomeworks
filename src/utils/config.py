@@ -10,7 +10,7 @@ constants, and filesystem helper functions used across Q1/Q2/Q3.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -243,3 +243,27 @@ def dataset_prefix(
     else:
         base = f"{model_name}_{num_classes}cls"
     return f"{base}_{task}" if task else base
+
+
+def config_to_dict(config) -> dict:
+    """
+    将 frozen dataclass 配置递归转为 JSON-safe 字典。
+    Convert a frozen dataclass config to a JSON-safe dict.
+
+    处理：Path → str, tuple → list, 嵌套 dataclass 递归展开。
+    """
+    raw = asdict(config)
+    return _make_json_safe(raw)
+
+
+def _make_json_safe(obj):
+    """递归转换不可 JSON 序列化的类型。"""
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, tuple):
+        return [_make_json_safe(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_json_safe(v) for v in obj]
+    return obj

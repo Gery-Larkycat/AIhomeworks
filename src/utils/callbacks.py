@@ -7,6 +7,7 @@ skorch 内置 Checkpoint 不包含 accuracy/epoch/num_classes 元数据，
 """
 
 from collections import OrderedDict
+import json
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,14 @@ class CustomCheckpoint(Callback):
         monitor: str = "valid_acc_best",
         task_tag: str = "",
         model_name: str = "resnet18",
+        config_dict: dict | None = None,
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.num_classes = num_classes
         self.monitor = monitor
         self.task_tag = task_tag
         self.model_name = model_name
+        self.config_dict = config_dict
 
     def on_epoch_end(self, net, **kwargs):
         # 仅在新最优时保存 / Only save on new best
@@ -63,6 +66,12 @@ class CustomCheckpoint(Callback):
             path,
         )
         print(f"  ** Saved best checkpoint: {acc:.4f} -> {path.name} **")
+
+        # 保存训练配置为独立 JSON / Save config as separate JSON
+        if self.config_dict is not None:
+            config_path = self.checkpoint_dir / f"{prefix}_config.json"
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(self.config_dict, f, indent=2, ensure_ascii=False)
 
 
 class FeatureExtractorCheckpoint(Callback):

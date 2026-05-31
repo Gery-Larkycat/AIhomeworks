@@ -15,6 +15,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, LRScheduler
 from torch.utils.data import DataLoader
 
 from utils.augment import apply_batch_augmentation
+from utils.config import config_to_dict
 from utils.evaluate import evaluate
 from .config import AugmentationConfig, TrainConfig
 
@@ -296,7 +297,8 @@ def train(
             best_acc = test_acc
             epochs_without_improvement = 0
             save_best_checkpoint(
-                model, optimizer, epoch, test_acc, config
+                model, optimizer, epoch, test_acc, config,
+                config_dict=config_to_dict(config),
             )
             save_feature_extractor(model, config)
             print(f"  ** New best accuracy: {best_acc:.4f} **")

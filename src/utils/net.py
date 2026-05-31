@@ -12,6 +12,8 @@ Generic skorch NeuralNetClassifier for training any classification model.
 Q2 传入 ResNet18，Q1 可传入 VGG16。
 """
 
+import dataclasses
+
 import torch
 import torch.nn as nn
 from skorch import NeuralNetClassifier
@@ -24,6 +26,16 @@ from .callbacks import (
     LRRecorder,
     TrainingHistory,
 )
+
+
+def _serialize_config(config) -> dict:
+    """将鸭子类型配置转为 JSON-safe 字典，供 CustomCheckpoint 保存。"""
+    from .config import config_to_dict
+    # 配置是 frozen dataclass 时直接序列化
+    if dataclasses.is_dataclass(config) and not isinstance(config, type):
+        return config_to_dict(config)
+    # 非 dataclass（不应出现）：返回空 dict
+    return {}
 
 
 class ClassifierNet(NeuralNetClassifier):
@@ -179,6 +191,7 @@ def create_classifier_net(
                 num_classes=config.num_classes,
                 task_tag=getattr(config, "task_tag", ""),
                 model_name=getattr(config, "model_name", "resnet18"),
+                config_dict=_serialize_config(config),
             ),
         ),
         # 训练历史 JSON 保存

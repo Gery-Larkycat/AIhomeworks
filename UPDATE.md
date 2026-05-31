@@ -453,3 +453,18 @@ src/
 - `src/Q1/config.py`: `Q1TrainConfig` 新增 `model_name: str = "vgg16"`
 - `src/Q2/config.py`: `Q2TrainConfig` 新增 `model_name: str = "resnet18"`
 
+---
+
+## 2026-05-31: 训练配置独立保存为 JSON
+
+### Added / 新增
+
+- `src/utils/config.py`: 新增 `config_to_dict(config)` — 将 frozen dataclass 配置递归转为 JSON-safe 字典（`Path→str`, `tuple→list`, 嵌套 dataclass 递归展开）
+
+### Changed / 变更
+
+- `src/utils/callbacks.py`: `CustomCheckpoint` 新增 `config_dict` 参数，保存检查点时同步写入 `{prefix}_config.json`（如 `vgg16_cifar10_config.json`）
+- `src/utils/net.py`: `create_classifier_net()` 序列化 config 为 dict 传给 `CustomCheckpoint`
+- `src/Q3/checkpoint.py`: `save_best_checkpoint` / `save_full_checkpoint` 新增 `config_dict` 参数，写入独立 JSON
+- `src/Q3/train.py`: `train()` 传入 `config_dict=config_to_dict(config)`
+

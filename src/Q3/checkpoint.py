@@ -38,6 +38,7 @@ def save_full_checkpoint(
     accuracy: float,
     config: TrainConfig,
     filename: str = "resnet18_cifar100_full.pth",
+    config_dict: dict | None = None,
 ) -> Path:
     """
     Save full training checkpoint for resuming.
@@ -55,6 +56,12 @@ def save_full_checkpoint(
         },
         path,
     )
+    # 保存训练配置为独立 JSON / Save config as separate JSON
+    if config_dict is not None:
+        prefix = filename.replace("_best.pth", "").replace("_full.pth", "")
+        config_path = config.checkpoint_dir / f"{prefix}_config.json"
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config_dict, f, indent=2, ensure_ascii=False)
     return path
 
 
@@ -64,6 +71,7 @@ def save_best_checkpoint(
     epoch: int,
     accuracy: float,
     config: TrainConfig,
+    config_dict: dict | None = None,
 ) -> Path:
     """
     Save best model checkpoint / 保存最佳模型检查点。
@@ -72,6 +80,7 @@ def save_best_checkpoint(
     filename = f"{prefix}_best.pth"
     return save_full_checkpoint(
         model, optimizer, epoch, accuracy, config, filename,
+        config_dict=config_dict,
     )
 
 
