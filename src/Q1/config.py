@@ -42,6 +42,8 @@ class Q1TrainConfig:
     optimizer_type: str = "sgd"
     scheduler_type: str = "cosine"
     use_amp: bool = False
+    use_scheduler: bool = True       # CosineAnneLR on/off / 余弦退火开关
+    use_early_stopping: bool = True  # EarlyStopping on/off / 早停开关
 
     # -- Early stopping / 早停 --
     patience: int = 10

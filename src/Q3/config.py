@@ -57,6 +57,8 @@ class TrainConfig:
     dropout_rate: float = (
         0.5  # Dropout after global avg pool; 0 = disabled / 全局池化后 Dropout；0 = 禁用
     )
+    use_bn: bool = True           # BatchNorm on/off / BN 开关
+    model_name: str = "resnet18"  # Checkpoint filename prefix / 检查点文件名前缀
 
     # -- Training / 训练超参数 --
     batch_size: int = 1024
@@ -70,6 +72,8 @@ class TrainConfig:
     optimizer_type: str = "sgd"  # "sgd", "adam", "adamw", "rmsprop", "nadam"
     scheduler_type: str = "cosine"  # "cosine", "constant", "step"
     use_amp: bool = False  # Mixed precision (FP16) training / 混合精度训练
+    use_scheduler: bool = True       # LR scheduler on/off / 学习率调度开关
+    use_early_stopping: bool = True  # EarlyStopping on/off / 早停开关
 
     # -- Early stopping / 早停 --
     patience: int = 8  # Epochs to wait without improvement / 无改善等待轮数
@@ -129,6 +133,8 @@ class TransferConfig:
     optimizer_type: str = "sgd"
     scheduler_type: str = "cosine"
     use_amp: bool = False
+    use_scheduler: bool = True       # LR scheduler on/off / 学习率调度开关
+    use_early_stopping: bool = True  # EarlyStopping on/off / 早停开关
     patience: int = 8
     min_delta: float = 1e-4
     scheduler_t_max: int = 30
@@ -183,6 +189,8 @@ class TorchvisionTransferConfig:
     scheduler_type: str = "cosine"
     scheduler_t_max: int = 30
     use_amp: bool = False
+    use_scheduler: bool = True       # LR scheduler on/off / 学习率调度开关
+    use_early_stopping: bool = True  # EarlyStopping on/off / 早停开关
     patience: int = 8
     min_delta: float = 1e-4
 

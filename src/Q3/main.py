@@ -36,6 +36,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from src.Q3.config import TrainConfig  # noqa: E402
+from utils.config import AugmentationConfig  # noqa: E402
 from src.Q3.data import (  # noqa: E402
     get_cifar100_datasets, get_cifar100_loaders,
 )
@@ -169,7 +170,108 @@ def parse_args() -> argparse.Namespace:
             " / 指定超参搜索结果文件路径"
         ),
     )
+
+    # -- Technique toggles / 优化技术开关 --
+    parser.add_argument(
+        "--no-bn", action="store_true",
+        help="Disable BatchNorm / 禁用 BatchNorm",
+    )
+    parser.add_argument(
+        "--no-scheduler", action="store_true",
+        help="Disable LR scheduler / 禁用学习率调度",
+    )
+    parser.add_argument(
+        "--no-weight-decay", action="store_true",
+        help="Set weight_decay=0 / 禁用权重衰减",
+    )
+    parser.add_argument(
+        "--no-label-smoothing", action="store_true",
+        help="Set label_smoothing=0 / 禁用标签平滑",
+    )
+    parser.add_argument(
+        "--no-dropout", action="store_true",
+        help="Set dropout_rate=0 / 禁用 Dropout",
+    )
+    parser.add_argument(
+        "--no-early-stopping", action="store_true",
+        help="Disable early stopping / 禁用早停",
+    )
+    parser.add_argument(
+        "--no-cutmix", action="store_true",
+        help="Disable CutMix / 禁用 CutMix",
+    )
+    parser.add_argument(
+        "--no-mixup", action="store_true",
+        help="Disable Mixup / 禁用 Mixup",
+    )
+    parser.add_argument(
+        "--no-geom-aug", action="store_true",
+        help="Disable geometric augmentation / 禁用几何变换增强",
+    )
+    parser.add_argument(
+        "--no-color-aug", action="store_true",
+        help="Disable color augmentation / 禁用颜色变换增强",
+    )
+    parser.add_argument(
+        "--no-noise-aug", action="store_true",
+        help="Disable noise augmentation / 禁用噪声增强",
+    )
+    parser.add_argument(
+        "--no-weather-aug", action="store_true",
+        help="Disable weather augmentation / 禁用天气增强",
+    )
+    parser.add_argument(
+        "--no-mixing-aug", action="store_true",
+        help="Disable batch mixing augmentation / 禁用批次混合增强",
+    )
     return parser.parse_args()
+
+
+def _apply_technique_overrides(
+    args: argparse.Namespace, overrides: dict,
+) -> None:
+    """
+    将优化技术开关应用到 overrides 字典（就地修改）。
+    Apply technique toggle CLI args to overrides dict (in-place).
+
+    被 build_config() 和迁移学习分支共用。
+    """
+    if getattr(args, "no_bn", False):
+        overrides["use_bn"] = False
+    if getattr(args, "no_scheduler", False):
+        overrides["use_scheduler"] = False
+    if getattr(args, "no_weight_decay", False):
+        overrides["weight_decay"] = 0.0
+    if getattr(args, "no_label_smoothing", False):
+        overrides["label_smoothing"] = 0.0
+    if getattr(args, "no_dropout", False):
+        overrides["dropout_rate"] = 0.0
+    if getattr(args, "no_early_stopping", False):
+        overrides["use_early_stopping"] = False
+
+    # 增强分类覆盖 / Augmentation category overrides
+    aug_overrides: dict = {}
+    if getattr(args, "no_cutmix", False):
+        aug_overrides["use_cutmix"] = False
+    if getattr(args, "no_mixup", False):
+        aug_overrides["use_mixup"] = False
+    if getattr(args, "no_geom_aug", False):
+        aug_overrides["use_geom_aug"] = False
+    if getattr(args, "no_color_aug", False):
+        aug_overrides["use_color_aug"] = False
+    if getattr(args, "no_noise_aug", False):
+        aug_overrides["use_noise_aug"] = False
+    if getattr(args, "no_weather_aug", False):
+        aug_overrides["use_weather_aug"] = False
+    if getattr(args, "no_mixing_aug", False):
+        aug_overrides["use_mixing_aug"] = False
+    if aug_overrides:
+        current_aug = overrides.get(
+            "augmentation", AugmentationConfig(),
+        )
+        overrides["augmentation"] = dataclasses.replace(
+            current_aug, **aug_overrides,
+        )
 
 
 def build_config(
@@ -189,7 +291,6 @@ def build_config(
     if args.amp:
         overrides["use_amp"] = True
     if args.no_augmentation:
-        from src.Q3.config import AugmentationConfig
         overrides["augmentation"] = dataclasses.replace(
             AugmentationConfig(), use_augmentation=False,
         )
@@ -197,6 +298,10 @@ def build_config(
         overrides["data_root"] = Path(args.data_root)
     if args.dropout is not None:
         overrides["dropout_rate"] = args.dropout
+
+    # 优化技术开关 / Technique toggles
+    _apply_technique_overrides(args, overrides)
+
     return TrainConfig(**overrides)
 
 
@@ -252,6 +357,8 @@ def _run_torchvision_transfer(
         )
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
+    # 优化技术开关 / Technique toggles
+    _apply_technique_overrides(args, overrides)
     if overrides:
         config = dataclasses.replace(config, **overrides)
 
@@ -416,6 +523,8 @@ def _run_transfer(args: argparse.Namespace) -> None:
         )
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
+    # 优化技术开关 / Technique toggles
+    _apply_technique_overrides(args, overrides)
     if overrides:
         config = dataclasses.replace(config, **overrides)
 

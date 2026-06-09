@@ -221,7 +221,13 @@ def train(
     # Create optimizer, scheduler, criterion via factories
     # 通过工厂函数创建优化器、调度器、损失函数
     optimizer = create_optimizer(model, config)
-    scheduler = create_scheduler(optimizer, config)
+    # getattr 保证缺少字段时默认 True（后向兼容）
+    scheduler = (
+        create_scheduler(optimizer, config)
+        if getattr(config, "use_scheduler", True)
+        else None
+    )
+    use_early_stopping = getattr(config, "use_early_stopping", True)
 
     # Disable label_smoothing when CutMix/Mixup active:
     # soft labels already provide similar regularization.
@@ -302,7 +308,8 @@ def train(
             )
             save_feature_extractor(model, config)
             print(f"  ** New best accuracy: {best_acc:.4f} **")
-        else:
+        elif use_early_stopping:
+            # 仅在早停启用时递增计数器并检查
             epochs_without_improvement += 1
             print(
                 f"  No improvement for "

@@ -357,6 +357,9 @@ def apply_batch_augmentation(
     """
     if not aug_config.use_augmentation:
         return images, labels
+    # 分类主开关：批次混合类别禁用时直接返回
+    if not getattr(aug_config, "use_mixing_aug", True):
+        return images, labels
     if not aug_config.use_cutmix and not aug_config.use_mixup:
         return images, labels
 
@@ -412,85 +415,93 @@ def build_train_transforms(
     pipeline: list[Callable] = []
 
     # ---- A. Geometric / 几何变换 (PIL 级) ----
-    pipeline.append(transforms.RandomCrop(
-        32, padding=aug_config.random_crop_padding,
-        padding_mode="reflect",
-    ))
-    pipeline.append(transforms.RandomHorizontalFlip(
-        p=aug_config.hflip_prob,
-    ))
-    pipeline.append(transforms.RandomAffine(
-        degrees=aug_config.affine_degrees,
-        translate=(aug_config.affine_translate, aug_config.affine_translate),
-        scale=aug_config.affine_scale,
-        shear=aug_config.affine_shear,
-    ))
-    pipeline.append(transforms.RandomPerspective(
-        distortion_scale=aug_config.perspective_distortion,
-        p=aug_config.perspective_prob,
-    ))
+    # getattr 保证缺少字段时默认 True（后向兼容）
+    if getattr(aug_config, "use_geom_aug", True):
+        pipeline.append(transforms.RandomCrop(
+            32, padding=aug_config.random_crop_padding,
+            padding_mode="reflect",
+        ))
+        pipeline.append(transforms.RandomHorizontalFlip(
+            p=aug_config.hflip_prob,
+        ))
+        pipeline.append(transforms.RandomAffine(
+            degrees=aug_config.affine_degrees,
+            translate=(aug_config.affine_translate, aug_config.affine_translate),
+            scale=aug_config.affine_scale,
+            shear=aug_config.affine_shear,
+        ))
+        pipeline.append(transforms.RandomPerspective(
+            distortion_scale=aug_config.perspective_distortion,
+            p=aug_config.perspective_prob,
+        ))
 
     # ---- B. Color / 颜色变换 (PIL 级) ----
-    pipeline.append(transforms.ColorJitter(
-        brightness=aug_config.cj_brightness,
-        contrast=aug_config.cj_contrast,
-        saturation=aug_config.cj_saturation,
-        hue=aug_config.cj_hue,
-    ))
-    pipeline.append(transforms.RandomGrayscale(
-        p=aug_config.grayscale_prob,
-    ))
-    pipeline.append(transforms.RandomAutocontrast(
-        p=aug_config.auto_contrast_prob,
-    ))
-    pipeline.append(transforms.RandomEqualize(
-        p=aug_config.equalize_prob,
-    ))
-    pipeline.append(transforms.RandomPosterize(
-        bits=aug_config.posterize_bits,
-        p=aug_config.posterize_prob,
-    ))
-    pipeline.append(transforms.RandomSolarize(
-        threshold=aug_config.solarize_threshold,
-        p=aug_config.solarize_prob,
-    ))
+    if getattr(aug_config, "use_color_aug", True):
+        pipeline.append(transforms.ColorJitter(
+            brightness=aug_config.cj_brightness,
+            contrast=aug_config.cj_contrast,
+            saturation=aug_config.cj_saturation,
+            hue=aug_config.cj_hue,
+        ))
+        pipeline.append(transforms.RandomGrayscale(
+            p=aug_config.grayscale_prob,
+        ))
+        pipeline.append(transforms.RandomAutocontrast(
+            p=aug_config.auto_contrast_prob,
+        ))
+        pipeline.append(transforms.RandomEqualize(
+            p=aug_config.equalize_prob,
+        ))
+        pipeline.append(transforms.RandomPosterize(
+            bits=aug_config.posterize_bits,
+            p=aug_config.posterize_prob,
+        ))
+        pipeline.append(transforms.RandomSolarize(
+            threshold=aug_config.solarize_threshold,
+            p=aug_config.solarize_prob,
+        ))
 
     # ---- D. JPEG Compression / JPEG 压缩 (PIL 级) ----
-    pipeline.append(JPEGCompressionPIL(
-        quality_range=aug_config.jpeg_quality,
-        p=aug_config.jpeg_prob,
-    ))
+    if getattr(aug_config, "use_weather_aug", True):
+        pipeline.append(JPEGCompressionPIL(
+            quality_range=aug_config.jpeg_quality,
+            p=aug_config.jpeg_prob,
+        ))
 
-    # ---- ToTensor + Normalize / 转张量 + 归一化 ----
+    # ---- ToTensor + Normalize / 转张量 + 归一化（始终包含）----
     pipeline.append(transforms.ToTensor())
     pipeline.append(transforms.Normalize(mean=mean, std=std))
 
     # ---- C. Noise & Degradation / 噪声与降质 (Tensor 级) ----
-    pipeline.append(GaussianNoise(
-        std=aug_config.gaussian_noise_std,
-        p=aug_config.gaussian_noise_prob,
-    ))
-    pipeline.append(SaltPepperNoise(
-        amount=aug_config.salt_pepper_amount,
-        p=aug_config.salt_pepper_prob,
-    ))
-    pipeline.append(ProbabilisticGaussianBlur(
-        kernel_size=aug_config.gaussian_blur_kernel,
-        p=aug_config.gaussian_blur_prob,
-    ))
-    pipeline.append(FogEffect(
-        intensity_range=aug_config.fog_intensity,
-        p=aug_config.fog_prob,
-    ))
-    pipeline.append(RainStreaks(
-        drops_range=aug_config.rain_drops,
-        angle_range=aug_config.rain_angle,
-        p=aug_config.rain_prob,
-    ))
-    pipeline.append(transforms.RandomErasing(
-        p=aug_config.erasing_prob,
-        scale=aug_config.erasing_scale,
-    ))
+    if getattr(aug_config, "use_noise_aug", True):
+        pipeline.append(GaussianNoise(
+            std=aug_config.gaussian_noise_std,
+            p=aug_config.gaussian_noise_prob,
+        ))
+        pipeline.append(SaltPepperNoise(
+            amount=aug_config.salt_pepper_amount,
+            p=aug_config.salt_pepper_prob,
+        ))
+        pipeline.append(ProbabilisticGaussianBlur(
+            kernel_size=aug_config.gaussian_blur_kernel,
+            p=aug_config.gaussian_blur_prob,
+        ))
+        pipeline.append(transforms.RandomErasing(
+            p=aug_config.erasing_prob,
+            scale=aug_config.erasing_scale,
+        ))
+
+    # ---- D. Weather / 天气效果 (Tensor 级) ----
+    if getattr(aug_config, "use_weather_aug", True):
+        pipeline.append(FogEffect(
+            intensity_range=aug_config.fog_intensity,
+            p=aug_config.fog_prob,
+        ))
+        pipeline.append(RainStreaks(
+            drops_range=aug_config.rain_drops,
+            angle_range=aug_config.rain_angle,
+            p=aug_config.rain_prob,
+        ))
 
     return transforms.Compose(pipeline)
 

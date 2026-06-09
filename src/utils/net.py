@@ -151,6 +151,7 @@ def create_classifier_net(
     label_smoothing = 0.0 if batch_mix_active else config.label_smoothing
 
     # 构建 callbacks
+    # 非条件化的 callbacks（始终启用）
     callbacks = [
         # 训练准确率（默认只有 valid_acc）
         (
@@ -164,16 +165,22 @@ def create_classifier_net(
         ),
         # 学习率记录
         ("lr_recorder", LRRecorder()),
-        # 学习率调度
-        (
+    ]
+
+    # 学习率调度（可条件化关闭）
+    # getattr 保证缺少字段时默认 True（后向兼容 Q1/Q3 旧配置）
+    if getattr(config, "use_scheduler", True):
+        callbacks.append((
             "lr_scheduler",
             LRScheduler(
                 policy=torch.optim.lr_scheduler.CosineAnnealingLR,
                 T_max=config.scheduler_t_max,
             ),
-        ),
-        # 早停（监控验证准确率）
-        (
+        ))
+
+    # 早停（可条件化关闭）
+    if getattr(config, "use_early_stopping", True):
+        callbacks.append((
             "early_stop",
             EarlyStopping(
                 monitor="valid_acc",
@@ -182,7 +189,10 @@ def create_classifier_net(
                 lower_is_better=False,
                 load_best=True,
             ),
-        ),
+        ))
+
+    # 始终启用的 callbacks
+    callbacks.extend([
         # 自定义格式检查点
         (
             "custom_checkpoint",
@@ -199,7 +209,7 @@ def create_classifier_net(
             "training_history",
             TrainingHistory(checkpoint_dir=config.checkpoint_dir),
         ),
-    ]
+    ])
 
     # 可选：特征提取器保存（迁移学习需要）
     if save_feature_extractor:
@@ -221,6 +231,7 @@ def create_classifier_net(
         model_class,
         module__num_classes=config.num_classes,
         module__dropout_rate=config.dropout_rate,
+        module__use_bn=getattr(config, "use_bn", True),
         criterion=nn.CrossEntropyLoss,
         criterion__label_smoothing=label_smoothing,
         optimizer=torch.optim.SGD,

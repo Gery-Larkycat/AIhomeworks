@@ -56,6 +56,15 @@ class AugmentationConfig:
     # -- Master switch / 总开关 --
     use_augmentation: bool = True
 
+    # -- 分类主开关 / Category master switches --
+    # 层级：use_augmentation（全局）> use_xxx_aug（分类）> 各单技术参数
+    # Hierarchy: use_augmentation (global) > use_xxx_aug (category) > per-technique params
+    use_geom_aug: bool = True       # A. Geometric / 几何变换
+    use_color_aug: bool = True      # B. Color / 颜色变换
+    use_noise_aug: bool = True      # C. Noise & Degradation / 噪声与降质
+    use_weather_aug: bool = True    # D. Weather & Compression / 天气与压缩
+    use_mixing_aug: bool = True     # E. Batch Mixing / 批次级混合
+
     # -- A. Geometric / 几何变换 --
     random_crop_padding: int = 4
     hflip_prob: float = 0.5

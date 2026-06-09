@@ -468,3 +468,46 @@ src/
 - `src/Q3/checkpoint.py`: `save_best_checkpoint` / `save_full_checkpoint` 新增 `config_dict` 参数，写入独立 JSON
 - `src/Q3/train.py`: `train()` 传入 `config_dict=config_to_dict(config)`
 
+---
+
+## 2026-06-05: 优化技术开关 + 消融实验框架（全题目覆盖）
+
+### Added / 新增
+
+- `src/utils/ablation.py`: **新建** — 共享消融实验框架
+  - `ABLATION_EXPERIMENTS`: 标准消融矩阵（baseline + 14 个 one-off 实验）
+  - `AblationExperiment` / `AblationResult` 数据类
+  - `build_experiment_config()`: 从默认配置 + 实验覆盖构建训练配置
+  - `run_single_ablation()` / `run_ablation_suite()`: 实验执行引擎
+  - `save_ablation_results()`: JSON + CSV 结果保存
+  - `print_ablation_report()`: 控制台格式化表格
+  - `plot_ablation_results()`: 4 种对比图表（accuracy_comparison, accuracy_delta, training_time, curves_overlay）
+  - `filter_experiments()`: 按名称过滤实验子集
+- `src/Q1/ablation.py`: Q1 VGG-16 消融实验入口（`python -m Q1.ablation`）
+- `src/Q2/ablation.py`: Q2 ResNet-18 消融实验入口（`python -m Q2.ablation`）
+- `src/Q3/ablation.py`: Q3 CIFAR-100 消融实验入口（`python -m Q3.ablation`）
+- `src/tests/test_ablation_toggles.py`: 19 项自动化测试（配置字段、管线条件化、实验矩阵）
+- 全部 13 个 CLI 优化技术开关（`--no-bn`, `--no-scheduler`, `--no-weight-decay`, `--no-label-smoothing`, `--no-dropout`, `--no-early-stopping`, `--no-cutmix`, `--no-mixup`, `--no-geom-aug`, `--no-color-aug`, `--no-noise-aug`, `--no-weather-aug`, `--no-mixing-aug`）
+
+### Changed / 变更
+
+- `src/utils/config.py`: `AugmentationConfig` 新增 5 个分类主开关（`use_geom_aug`, `use_color_aug`, `use_noise_aug`, `use_weather_aug`, `use_mixing_aug`），全部默认 True
+- `src/Q1/config.py`: `Q1TrainConfig` 新增 `use_scheduler`, `use_early_stopping`（默认 True）
+- `src/Q2/config.py`: `Q2TrainConfig` 新增 `use_scheduler`, `use_early_stopping`（默认 True）
+- `src/Q3/config.py`: `TrainConfig` 新增 `use_scheduler`, `use_early_stopping`, `use_bn`, `model_name`；`TransferConfig` 和 `TorchvisionTransferConfig` 各新增 `use_scheduler`, `use_early_stopping`
+- `src/utils/net.py`: **Bug 修复** `module__use_bn` 未传递导致 `use_bn` 配置不生效；LR 调度器和 Early Stopping 条件化（`getattr` 后向兼容）
+- `src/Q3/train.py`: 手动训练循环的调度器和早停条件化
+- `src/utils/augment.py`: `build_train_transforms()` 按分类开关守卫（geom/color/noise/weather）；`apply_batch_augmentation()` 新增 `use_mixing_aug` 守卫
+- `src/Q1/main.py`: 新增 12 个 CLI 开关 + `build_config()` 覆盖
+- `src/Q2/main.py`: 新增 13 个 CLI 开关 + `build_config()` 覆盖
+- `src/Q3/main.py`: 新增 13 个 CLI 开关 + `_apply_technique_overrides()` 辅助函数（CIFAR-100/transfer/torchvision-transfer 三分支共用）
+
+### Fixed / 修复
+
+- `src/utils/net.py`: `create_classifier_net()` 未传递 `module__use_bn`，导致 Q1/Q2/Q3 的 `use_bn` 配置字段不生效（模型始终使用默认 True）
+
+### Tests / 测试
+
+- 22 项新测试全部通过（含搜索结果加载验证）
+- 85 项已有测试无回归
+

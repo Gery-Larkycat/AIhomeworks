@@ -142,6 +142,60 @@ def parse_args() -> argparse.Namespace:
             " / 禁用数据增强"
         ),
     )
+
+    # -- Technique toggles / 优化技术开关 --
+    parser.add_argument(
+        "--no-bn", action="store_true",
+        help="Disable BatchNorm / 禁用 BatchNorm",
+    )
+    parser.add_argument(
+        "--no-scheduler", action="store_true",
+        help="Disable LR scheduler / 禁用学习率调度",
+    )
+    parser.add_argument(
+        "--no-weight-decay", action="store_true",
+        help="Set weight_decay=0 / 禁用权重衰减",
+    )
+    parser.add_argument(
+        "--no-label-smoothing", action="store_true",
+        help="Set label_smoothing=0 / 禁用标签平滑",
+    )
+    parser.add_argument(
+        "--no-dropout", action="store_true",
+        help="Set dropout_rate=0 / 禁用 Dropout",
+    )
+    parser.add_argument(
+        "--no-early-stopping", action="store_true",
+        help="Disable early stopping / 禁用早停",
+    )
+    parser.add_argument(
+        "--no-cutmix", action="store_true",
+        help="Disable CutMix / 禁用 CutMix",
+    )
+    parser.add_argument(
+        "--no-mixup", action="store_true",
+        help="Disable Mixup / 禁用 Mixup",
+    )
+    parser.add_argument(
+        "--no-geom-aug", action="store_true",
+        help="Disable geometric augmentation / 禁用几何变换增强",
+    )
+    parser.add_argument(
+        "--no-color-aug", action="store_true",
+        help="Disable color augmentation / 禁用颜色变换增强",
+    )
+    parser.add_argument(
+        "--no-noise-aug", action="store_true",
+        help="Disable noise augmentation / 禁用噪声增强",
+    )
+    parser.add_argument(
+        "--no-weather-aug", action="store_true",
+        help="Disable weather augmentation / 禁用天气增强",
+    )
+    parser.add_argument(
+        "--no-mixing-aug", action="store_true",
+        help="Disable batch mixing augmentation / 禁用批次混合增强",
+    )
     return parser.parse_args()
 
 
@@ -169,6 +223,45 @@ def build_config(
         )
     if args.data_root is not None:
         overrides["data_root"] = Path(args.data_root)
+
+    # -- Technique toggle overrides / 优化技术开关覆盖 --
+    if getattr(args, "no_bn", False):
+        overrides["use_bn"] = False
+    if args.no_scheduler:
+        overrides["use_scheduler"] = False
+    if args.no_weight_decay:
+        overrides["weight_decay"] = 0.0
+    if args.no_label_smoothing:
+        overrides["label_smoothing"] = 0.0
+    if args.no_dropout:
+        overrides["dropout_rate"] = 0.0
+    if args.no_early_stopping:
+        overrides["use_early_stopping"] = False
+
+    # -- Augmentation category overrides / 增强分类覆盖 --
+    aug_overrides: dict = {}
+    if args.no_cutmix:
+        aug_overrides["use_cutmix"] = False
+    if args.no_mixup:
+        aug_overrides["use_mixup"] = False
+    if args.no_geom_aug:
+        aug_overrides["use_geom_aug"] = False
+    if args.no_color_aug:
+        aug_overrides["use_color_aug"] = False
+    if args.no_noise_aug:
+        aug_overrides["use_noise_aug"] = False
+    if args.no_weather_aug:
+        aug_overrides["use_weather_aug"] = False
+    if args.no_mixing_aug:
+        aug_overrides["use_mixing_aug"] = False
+    if aug_overrides:
+        current_aug = overrides.get(
+            "augmentation", AugmentationConfig(),
+        )
+        overrides["augmentation"] = dataclasses.replace(
+            current_aug, **aug_overrides,
+        )
+
     return Q2TrainConfig(**overrides)
 
 

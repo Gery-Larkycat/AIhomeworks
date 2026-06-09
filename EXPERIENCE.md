@@ -79,3 +79,12 @@
 - **3 个 MaxPool 而非 5 个**：标准 VGG-16 有 5 个 MaxPool（224→112→56→28→14→7）。CIFAR-10 的 32×32 图像只需 3 个 MaxPool（32→16→8→4），Block 4/5 去掉 MaxPool 保留 4×4 空间信息。用 `AdaptiveAvgPool2d(1,1)` 统一到 1×1。
 - **FC 适度简化**：原始 VGG-16 FC 为 25088→4096→4096→1000。CIFAR 适配后特征仅 512 维（1×1×512），改为 2 层 FC：512→512→num_classes。保留多层结构但大幅减少参数。
 - **搜索结果后缀区分模型**：Q1 搜索用 `vgg16_cifar10_hp_search` 后缀，Q2 用 `cifar10_hp_search`，避免不同模型的搜索结果混淆。
+
+## 消融实验与优化技术开关 / Ablation & Technique Toggles
+
+- **`getattr(config, field, True)` 后向兼容**：新增的开关字段（`use_scheduler`, `use_early_stopping`）需要在共享管线（`utils/net.py`, `Q3/train.py`, `utils/augment.py`）中检查，但这些管线被 Q1/Q2/Q3 共用，旧配置可能缺少新字段。用 `getattr(config, "use_scheduler", True)` 默认启用，保证不传时行为不变。
+- **分类开关层级设计**：`use_augmentation`（全局）> `use_xxx_aug`（分类）> 单技术参数（如 `use_cutmix`）。分类开关在 `build_train_transforms()` 中守卫，单技术在 `apply_batch_augmentation()` 中检查。`--no-mixing-aug` 禁用整个 E 类（CutMix+Mixup），`--no-cutmix` 只禁用 CutMix 保留 Mixup。
+- **`module__use_bn` Bug 教训**：skorch 通过 `module__param` 前缀传递参数给底层 PyTorch 模型。`create_classifier_net()` 传递了 `module__num_classes` 和 `module__dropout_rate` 但遗漏了 `module__use_bn`，导致模型始终使用默认值 `True`。配置字段存在不等于生效，必须确认管线确实消费了该字段。
+- **消融实验框架共享化**：不同题目的消融实验只有（1）默认配置、（2）训练函数、（3）数据加载函数不同。将实验矩阵、运行、报告、可视化抽象为 `utils/ablation.py` 共享框架，各题目只需 ~50 行入口脚本。
+- **`_apply_technique_overrides()` 辅助函数**：Q3 的 `main.py` 有三个配置分支（CIFAR-100/transfer/torchvision-transfer），每个都需应用相同的开关覆盖。提取为辅助函数避免重复代码。
+- **Q3 TrainConfig 补齐 `use_bn` / `model_name`**：Q3 的 `TrainConfig` 原本缺少这两个字段，但 ResNet-18 模型支持它们。消融实验的 `no_bn` 需要此字段才能生效。新增后不影响现有流程（默认值与模型默认一致）。
