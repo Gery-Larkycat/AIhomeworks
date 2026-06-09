@@ -12,6 +12,7 @@ wheels/
 # Data and model artifacts / 数据和模型产物
 data/
 outputs/
+checkpoints/
 *.png
 *.pth
 
