@@ -8,23 +8,22 @@ from pathlib import Path
 
 from torchvision import datasets
 
-from utils.config import SearchConfig, make_search_dir
+from utils.config import SearchConfig, TrainConfig, make_search_dir
 from utils.search import (
     load_best_search_params,
     prepare_search_data,
     run_search,
 )
 
-from .config import Q1TrainConfig
 from .model import VGG16
 
 
-# Q1TrainConfig 有效字段集合，用于过滤搜索结果
-_VALID_Q1_FIELDS = {f.name for f in dataclasses.fields(Q1TrainConfig)}
+# TrainConfig 有效字段集合，用于过滤搜索结果
+_VALID_FIELDS = {f.name for f in dataclasses.fields(TrainConfig)}
 
 
 def run_q1_search(
-    config: Q1TrainConfig,
+    config,
     search_cfg: SearchConfig | None = None,
 ) -> dict:
     """
@@ -70,7 +69,7 @@ def load_q1_best_params(
     search_dir = make_search_dir("Q1")
     result = load_best_search_params(
         search_dir,
-        valid_fields=_VALID_Q1_FIELDS,
+        valid_fields=_VALID_FIELDS,
         pattern="*_vgg16_cifar10_hp_search.json",
         specific_file=(
             Path(specific_file)

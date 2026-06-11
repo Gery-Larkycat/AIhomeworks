@@ -15,17 +15,19 @@ import pytest
 import torch
 import torch.nn as nn
 from skorch import NeuralNetClassifier
+from torchvision import datasets
 
 from src.Q3.config import SearchConfig, TrainConfig
-from src.Q3.search import (
+from src.Q3.search import load_best_search_params
+# 内部搜索函数已统一到 utils.search
+from utils.search import (
     PARAM_MAP,
     _build_param_distributions,
     _build_param_grid,
     _create_search_net,
-    _prepare_search_data,
-    load_best_search_params,
+    prepare_search_data as _prepare_search_data,
 )
-from Q2.model import ResNet18
+from models.resnet18 import ResNet18
 
 
 # ---------------------------------------------------------------------------
@@ -34,30 +36,34 @@ from Q2.model import ResNet18
 
 
 class TestPrepareSearchData:
-    """Test _prepare_search_data produces correct arrays."""
+    """Test prepare_search_data produces correct arrays."""
+
+    @pytest.fixture(autouse=True)
+    def _load_data(self):
+        """加载 CIFAR-100 数据一次，供所有测试复用。"""
+        config = TrainConfig()
+        raw_dataset = datasets.CIFAR100(
+            root=str(config.data_root), train=True, download=True,
+        )
+        self.X, self.y = _prepare_search_data(
+            raw_dataset, config.mean, config.std,
+        )
 
     def test_shapes_and_dtypes(self):
         """返回的 numpy 数组 shape 和 dtype 正确。"""
-        config = TrainConfig()
-        X, y = _prepare_search_data(config)
-        assert X.shape == (50000, 3, 32, 32)
-        assert X.dtype == np.float32
-        assert y.shape == (50000,)
-        assert y.dtype == np.int64
+        assert self.X.shape == (50000, 3, 32, 32)
+        assert self.X.dtype == np.float32
+        assert self.y.shape == (50000,)
+        assert self.y.dtype == np.int64
 
     def test_labels_in_valid_range(self):
         """标签在 [0, 99] 范围内（CIFAR-100 有 100 类）。"""
-        config = TrainConfig()
-        _, y = _prepare_search_data(config)
-        assert y.min() >= 0
-        assert y.max() <= 99
+        assert self.y.min() >= 0
+        assert self.y.max() <= 99
 
     def test_normalization_applied(self):
         """数据已归一化（均值接近 0，标准差接近 1）。"""
-        config = TrainConfig()
-        X, _ = _prepare_search_data(config)
-        # Per-channel mean should be near 0
-        channel_means = X.mean(axis=(0, 2, 3))
+        channel_means = self.X.mean(axis=(0, 2, 3))
         assert all(abs(m) < 0.1 for m in channel_means)
 
 
@@ -73,14 +79,22 @@ class TestCreateSearchNet:
         """返回 NeuralNetClassifier 实例。"""
         config = TrainConfig()
         search_cfg = SearchConfig()
-        net = _create_search_net(config, search_cfg)
+        net = _create_search_net(
+            ResNet18,
+            {"num_classes": config.num_classes, "dropout_rate": config.dropout_rate},
+            search_cfg,
+        )
         assert isinstance(net, NeuralNetClassifier)
 
     def test_default_params(self):
         """默认参数设置正确。"""
         config = TrainConfig()
         search_cfg = SearchConfig()
-        net = _create_search_net(config, search_cfg)
+        net = _create_search_net(
+            ResNet18,
+            {"num_classes": config.num_classes, "dropout_rate": config.dropout_rate},
+            search_cfg,
+        )
         assert net.module == ResNet18
         assert net.criterion == nn.CrossEntropyLoss
         assert net.optimizer == torch.optim.SGD
@@ -89,9 +103,12 @@ class TestCreateSearchNet:
 
     def test_module_num_classes(self):
         """module__num_classes 正确传递。"""
-        config = TrainConfig(num_classes=100)
         search_cfg = SearchConfig()
-        net = _create_search_net(config, search_cfg)
+        net = _create_search_net(
+            ResNet18,
+            {"num_classes": 100, "dropout_rate": 0.5},
+            search_cfg,
+        )
         # skorch stores module kwargs
         assert net.module__num_classes == 100
 

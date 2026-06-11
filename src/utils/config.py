@@ -159,6 +159,75 @@ class SearchConfig:
 
 
 # ---------------------------------------------------------------------------
+# TrainConfig / 统一训练配置
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    """
+    统一训练配置，覆盖所有题目（Q1/Q2/Q3）。
+    Unified training configuration for all tasks.
+
+    设计动机：
+    - Q1 (VGG-16/CIFAR-10)、Q2 (ResNet-18/CIFAR-10)、Q3 (ResNet-18/CIFAR-100)
+      的训练配置字段完全相同，仅默认值有差异。
+    - 通过 models.registry.TaskSpec.default_overrides 覆盖差异项，
+      避免三份近乎相同的 frozen dataclass。
+
+    创建方式：
+    - 直接构造 TrainConfig() 使用通用默认值
+    - 使用 models.registry.make_config("Q1") 获取 Q1 专属默认配置
+    - 使用 dataclasses.replace(config, epochs=50) 修改任意字段
+
+    预设条件：需要 AugmentationConfig 提供增强参数。
+    """
+    # -- Paths / 路径 --
+    data_root: Path = Path("data")
+    checkpoint_dir: Path = Path("outputs/checkpoints")
+
+    # -- Model / 模型 --
+    num_classes: int = 10
+    dropout_rate: float = 0.5
+    use_bn: bool = True
+    model_name: str = "resnet18"
+    task_tag: str = ""
+
+    # -- Training / 训练超参数 --
+    batch_size: int = 128
+    epochs: int = 200
+    learning_rate: float = 0.1
+    momentum: float = 0.9
+    weight_decay: float = 5e-4
+    label_smoothing: float = 0.1
+
+    # -- Optimizer & Scheduler / 优化器与调度器 --
+    optimizer_type: str = "sgd"
+    scheduler_type: str = "cosine"
+    use_amp: bool = False
+    use_scheduler: bool = True       # CosineAnnealingLR on/off / 余弦退火开关
+    use_early_stopping: bool = True  # EarlyStopping on/off / 早停开关
+
+    # -- Early stopping / 早停 --
+    patience: int = 10
+    min_delta: float = 1e-4
+
+    # -- Scheduler / 学习率调度 --
+    scheduler_t_max: int = 200
+
+    # -- Data loading / 数据加载 --
+    num_workers: int = 0
+    pin_memory: bool = True
+
+    # -- Augmentation / 数据增强 --
+    augmentation: AugmentationConfig = AugmentationConfig()
+
+    # -- Normalization / 归一化 --
+    mean: tuple[float, ...] = CIFAR10_MEAN
+    std: tuple[float, ...] = CIFAR10_STD
+
+
+# ---------------------------------------------------------------------------
 # Run directory helpers / 运行目录辅助函数
 # ---------------------------------------------------------------------------
 

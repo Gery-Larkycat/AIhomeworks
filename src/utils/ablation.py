@@ -679,3 +679,151 @@ def filter_experiments(
             f"No matching experiments. Available: {available}"
         )
     return filtered
+
+
+# ===========================================================================
+# Unified ablation entry point / 统一消融入口
+# ===========================================================================
+
+
+def parse_ablation_args(description: str = "") -> tuple:
+    """
+    共享消融 CLI 参数解析。
+    Shared ablation CLI argument parser.
+
+    Returns:
+        (args, parser) — args 是解析后的 Namespace，
+        parser 是 ArgumentParser（可用于 --help）
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "--epochs", type=int, default=None,
+        help="Override epochs for all experiments / 覆盖训练轮数",
+    )
+    parser.add_argument(
+        "--experiments", type=str, default=None,
+        help=(
+            "Comma-separated experiment names"
+            " / 逗号分隔的实验名"
+            " (e.g. baseline,no_bn)"
+        ),
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory / 覆盖输出目录",
+    )
+    parser.add_argument(
+        "--ignore-search", action="store_true",
+        help=(
+            "Ignore existing search results, use default params"
+            " / 忽略已有搜索结果，使用默认参数"
+        ),
+    )
+    return parser.parse_args(), parser
+
+
+def run_ablation_main(
+    task_name: str,
+    load_best_params_fn,
+    args,
+) -> None:
+    """
+    统一消融实验入口。被 Q1/Q2/Q3 ablation.py 调用。
+    Unified ablation entry point called by all Q*/ablation.py.
+
+    包含完整的消融实验流程：
+    加载搜索结果 → 构建配置 → 运行实验套件 → 保存/报告/画图。
+
+    Args:
+        task_name:           任务名（"Q1", "Q2", "Q3"）
+        load_best_params_fn: 加载最优搜索参数的函数
+        args:                parse_ablation_args() 返回的 Namespace
+    """
+    import dataclasses
+
+    from models.registry import make_config, get_spec
+    from utils.config import generate_timestamp
+
+    spec = get_spec(task_name)
+
+    # 构建基础配置：自动加载搜索结果的最优参数
+    base_config = make_config(task_name)
+    if not args.ignore_search:
+        best_params = load_best_params_fn()
+        if best_params is not None:
+            base_config = dataclasses.replace(base_config, **best_params)
+            print(
+                "Loaded best params from search results"
+                " / 从搜索结果加载最优参数:"
+            )
+            for k, v in best_params.items():
+                print(f"  {k}: {v}")
+        else:
+            print(
+                "No search results found, using defaults"
+                " / 未找到搜索结果，使用默认参数"
+            )
+
+    # 输出目录 / Output directory
+    timestamp = generate_timestamp()
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else Path(f"outputs/{task_name}/ablation/{timestamp}")
+    )
+
+    # 打印信息头 / Print header
+    print("=" * 60)
+    print(f"{spec.model_name.upper()} {spec.dataset_name} Ablation Study")
+    print(f"{spec.model_name.upper()} {spec.dataset_name} 消融实验")
+    print("=" * 60)
+    print(f"Output: {output_dir}")
+    print()
+
+    # 过滤实验 / Filter experiments
+    experiments = filter_experiments(args.experiments)
+    print(f"Experiments to run: {len(experiments)}")
+    for exp in experiments:
+        print(f"  - {exp.name}: {exp.description}")
+    print()
+
+    # 额外配置覆盖 / Extra config overrides
+    extra_overrides = {}
+    if args.epochs is not None:
+        extra_overrides["epochs"] = args.epochs
+
+    # 训练函数：使用 train_skorch + 对应的 model_class
+    from utils.pipeline import train_skorch
+
+    def _train_fn(config, train_ds, test_ds, **kwargs):
+        return train_skorch(
+            config, train_ds, test_ds,
+            model_class=spec.model_class,
+            save_feature_extractor=spec.save_feature_extractor,
+        )
+
+    # 获取数据集函数
+    from utils.data import get_datasets
+
+    def _get_datasets(config):
+        return get_datasets(config)
+
+    # 运行消融实验套件 / Run ablation suite
+    results = run_ablation_suite(
+        default_config=base_config,
+        train_fn=_train_fn,
+        get_datasets_fn=_get_datasets,
+        output_dir=output_dir,
+        question_name=task_name,
+        experiments=experiments,
+        extra_config_overrides=extra_overrides or None,
+    )
+
+    # 输出报告 / Output reports
+    print_ablation_report(results)
+    save_ablation_results(results, output_dir)
+    plot_ablation_results(results, output_dir)
+
+    print(f"\nDone! Results saved to {output_dir}")

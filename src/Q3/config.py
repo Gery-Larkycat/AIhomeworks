@@ -2,9 +2,9 @@
 Q3 专用配置：CIFAR-100 训练、迁移学习、超参搜索。
 Q3-specific configs: CIFAR-100 training, transfer learning, hyperparameter search.
 
-共享类型（AugmentationConfig, SearchConfig, 归一化常量, 辅助函数）
-从 utils.config 导入，Q3 仅保留 Q3 特有的配置类。
-Shared types imported from utils.config; Q3 only keeps Q3-specific classes.
+共享类型（AugmentationConfig, SearchConfig, 归一化常量）
+从 utils.config 导入，Q3 仅保留特有配置类。
+TrainConfig 已统一到 utils.config，此处重导出以保持向后兼容。
 """
 
 from dataclasses import dataclass
@@ -12,6 +12,7 @@ from pathlib import Path
 
 # 共享类型导入 / Shared type imports
 from utils.config import (
+    TrainConfig,                   # 统一训练配置 / Unified training config
     AugmentationConfig,
     SearchConfig,
     CIFAR10_MEAN,
@@ -29,74 +30,15 @@ from utils.config import (
 
 
 # ---------------------------------------------------------------------------
+# Backward compatibility / 向后兼容
+# ---------------------------------------------------------------------------
+# Q3 原有的 TrainConfig 现在是 utils.config.TrainConfig 的重导出。
+# Q3 差异化默认值通过 models.registry.make_config("Q3") 获取。
+
+
+# ---------------------------------------------------------------------------
 # Q3-specific configs / Q3 专用配置
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TrainConfig:
-    """
-    CIFAR-100 训练配置 / CIFAR-100 training configuration.
-    不可变的冻结 dataclass 防止训练过程中意外修改。
-
-    设计动机：CIFAR-100 超参数与 Q2/CIFAR-10 差异较大
-    （更多类别、更大 batch、更多 epochs），因此独立配置。
-    预设条件：需要 utils.config.AugmentationConfig 提供增强参数。
-    """
-
-    # -- Paths / 路径配置 --
-    data_root: Path = Path("data")
-    checkpoint_dir: Path = Path("outputs/Q3/checkpoints")
-
-    # -- Model / 模型配置 --
-    num_classes: int = 100  # CIFAR-100 has 100 classes / CIFAR-100 有 100 个类别
-    # 任务标签，用于区分检查点文件名：
-    # "" = CIFAR-100 训练, "transfer" = CIFAR-100→10 迁移,
-    # "tvtransfer" = torchvision→10 迁移
-    task_tag: str = ""
-    dropout_rate: float = (
-        0.5  # Dropout after global avg pool; 0 = disabled / 全局池化后 Dropout；0 = 禁用
-    )
-    use_bn: bool = True           # BatchNorm on/off / BN 开关
-    model_name: str = "resnet18"  # Checkpoint filename prefix / 检查点文件名前缀
-
-    # -- Training / 训练超参数 --
-    batch_size: int = 1024
-    epochs: int = 150
-    learning_rate: float = 0.1
-    momentum: float = 0.9
-    weight_decay: float = 5e-4
-    label_smoothing: float = 0.1
-
-    # -- Optimizer & Scheduler / 优化器与调度器 --
-    optimizer_type: str = "sgd"  # "sgd", "adam", "adamw", "rmsprop", "nadam"
-    scheduler_type: str = "cosine"  # "cosine", "constant", "step"
-    use_amp: bool = False  # Mixed precision (FP16) training / 混合精度训练
-    use_scheduler: bool = True       # LR scheduler on/off / 学习率调度开关
-    use_early_stopping: bool = True  # EarlyStopping on/off / 早停开关
-
-    # -- Early stopping / 早停 --
-    patience: int = 8  # Epochs to wait without improvement / 无改善等待轮数
-    min_delta: float = (
-        1e-4  # Minimum accuracy improvement to qualify / 视为改善的最小准确率增量
-    )
-
-    # -- Scheduler / 学习率调度 --
-    scheduler_t_max: int = 150  # Cosine annealing period / 余弦退火周期
-
-    # -- Data loading / 数据加载 --
-    num_workers: int = (
-        0  # Windows spawn overhead > parallel benefit; set 2-4 on Linux
-        # Windows 下 spawn 开销大于并行收益；Linux 可设 2-4
-    )
-    pin_memory: bool = True  # Faster CPU→GPU transfer / 加速 CPU→GPU 数据传输
-
-    # -- Data augmentation / 数据增强 --
-    augmentation: AugmentationConfig = AugmentationConfig()
-
-    # -- CIFAR-100 normalization stats / CIFAR-100 归一化统计量 --
-    mean: tuple[float, ...] = CIFAR100_MEAN
-    std: tuple[float, ...] = CIFAR100_STD
 
 
 @dataclass(frozen=True)
@@ -211,8 +153,9 @@ class TorchvisionTransferConfig:
 # Allows from Q3.config import AugmentationConfig to still work
 
 __all__ = [
-    # Q3-specific / Q3 专用
+    # Unified / 统一
     "TrainConfig",
+    # Q3-specific / Q3 专用
     "TransferConfig",
     "TorchvisionTransferConfig",
     # Shared from utils.config / 从 utils.config 共享

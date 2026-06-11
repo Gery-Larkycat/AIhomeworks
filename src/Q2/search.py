@@ -8,23 +8,22 @@ from pathlib import Path
 
 from torchvision import datasets
 
-from utils.config import SearchConfig, make_search_dir
+from utils.config import SearchConfig, TrainConfig, make_search_dir
 from utils.search import (
     load_best_search_params,
     prepare_search_data,
     run_search,
 )
 
-from .config import Q2TrainConfig
 from .model import ResNet18
 
 
-# Q2TrainConfig 有效字段集合，用于过滤搜索结果
-_VALID_Q2_FIELDS = {f.name for f in dataclasses.fields(Q2TrainConfig)}
+# TrainConfig 有效字段集合，用于过滤搜索结果
+_VALID_FIELDS = {f.name for f in dataclasses.fields(TrainConfig)}
 
 
 def run_q2_search(
-    config: Q2TrainConfig,
+    config,
     search_cfg: SearchConfig | None = None,
 ) -> dict:
     """
@@ -69,7 +68,7 @@ def load_q2_best_params(
     search_dir = make_search_dir("Q2")
     result = load_best_search_params(
         search_dir,
-        valid_fields=_VALID_Q2_FIELDS,
+        valid_fields=_VALID_FIELDS,
         pattern="*_cifar10_hp_search.json",
         specific_file=(
             Path(specific_file)
