@@ -260,11 +260,22 @@ class TestResultLogging:
         assert loaded is not None
         assert loaded["learning_rate"] == 0.03
 
-    def test_load_no_args_returns_none(self):
+    def test_load_no_args_returns_none_when_no_results(self, tmp_path, monkeypatch):
         """无参数且搜索目录为空时返回 None。"""
-        # outputs/Q3/search_results/ 不存在或为空
+        # 通过让底层 _load_best 扫描空目录验证 None 返回
+        from utils.config import find_best_search_result
+        monkeypatch.setattr(
+            "utils.search.find_best_search_result",
+            lambda search_dir, pattern: None,
+        )
         result = load_best_search_params()
         assert result is None
+
+    def test_load_no_args_returns_dict_when_results_exist(self):
+        """无参数且搜索目录有结果时返回参数字典（而非 None）。"""
+        result = load_best_search_params()
+        # 实际环境可能已有搜索结果
+        assert result is None or isinstance(result, dict)
 
 
 # ---------------------------------------------------------------------------

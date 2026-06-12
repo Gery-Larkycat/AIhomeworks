@@ -511,3 +511,61 @@ src/
 - 22 项新测试全部通过（含搜索结果加载验证）
 - 85 项已有测试无回归
 
+## 2026-06-11: 项目全面重构 — 消除重复代码，提高复用率与可扩展性
+
+### Context / 背景
+
+项目中存在大量重复实现（尤其训练管线、配置、数据加载），导致多次改动不一致的 bug
+（如消融实验未加载搜索结果、`module__use_bn` 未传递）。本次重构系统性消除所有重复，
+遵循 SOLID/DRY/OCP 原则，使每道题只包含最必要的差异化代码，新模型/优化可通过注册机制轻松添加。
+
+### Added / 新增
+
+- `src/models/`: 模型定义 + TaskSpec 注册表
+  - `vgg16.py`: 从 `Q1/model.py` 移入（内容不变）
+  - `resnet18.py`: 从 `Q2/model.py` 移入（内容不变）
+  - `registry.py`: `TaskSpec` 注册表 + `make_config()` 工厂（OCP 实现：注册即用）
+- `src/utils/data.py`: 统一 CIFAR-10/100 数据加载（`get_datasets`/`get_test_only`/`get_loaders`）
+- `src/utils/cli.py`: 共享 CLI 参数构建（`add_common_train_args`/`add_transfer_args`/`apply_cli_overrides`）
+- `src/utils/pipeline.py`: 统一训练 `train_skorch()` + 评估 `evaluate_and_report()`
+- `src/utils/checkpoint.py`: 泛化检查点管理（从 `Q3/checkpoint.py` 移入，移除对 ResNet18 的硬编码）
+- `src/utils/config.py`: 新增统一 `TrainConfig` + `make_config()` 工厂
+
+### Changed / 重构
+
+消除的重复（DRY）：
+
+| 重复 | 重构前 | 重构后 |
+|---|---|---|
+| Q1/data ≡ Q2/data | 93 行 100% 相同 | `utils/data.py`（~110 行） |
+| Q1/config ≈ Q2/config | 仅 3 个默认值不同 | `make_config(task)`（~15 行） |
+| Q1/training ≈ Q2/training | 仅 model_class 不同 | `train_skorch()`（~30 行） |
+| Q1/main ≈ Q2/main | 85% 相同（~880 行） | 共享 CLI + pipeline（~80 行/题） |
+| 评估块 ×5 | loss/acc+per_class+cm+vis | `evaluate_and_report()`（~50 行） |
+| Q3/search.py | 复刻 utils/search.py（408 行） | 委托调用（68 行） |
+| Q1/Q2/Q3 ablation.py | 90% 相同 | `run_ablation_main()`（~15 行/题） |
+| _apply_technique_overrides ×3 | 覆盖逻辑重复 | `apply_cli_overrides()` |
+
+### Architecture / 架构
+
+- **TaskSpec 注册表**：每道题的差异化信息（模型类、数据集、默认超参）封装为值对象
+- **添加新题目**：注册一个 `TaskSpec`（~15 行）即可，零改动共享代码
+- **向后兼容**：所有旧 import 路径（`Q1TrainConfig`、`train_vgg` 等）通过重导出/工厂函数保持有效
+
+### Fixed / 修复
+
+- `src/utils/ablation.py`: `run_ablation_main()` 缺少 `import dataclasses`（运行时报错）
+- `src/Q3/tests/test_search.py`: `test_load_no_args_returns_none` 假设无搜索结果，
+  实际环境有结果时必然失败。改为 mock `find_best_search_result` 返回 None
+
+### Tests / 测试
+
+- 新增 `src/tests/test_unified.py`（23 项参数化测试：注册表、配置工厂、数据加载、CLI、向后兼容）
+- 新增 `src/tests/test_refactoring_runtime.py`（54 项：模块导入、函数可调用性、端到端）
+- 全量测试：337 passed, 0 regressions（此前 1 项已知失败现已修复）
+
+### Stats / 统计
+
+- 33 files changed, 2700 insertions(+), 3159 deletions(-)
+- 净减少约 460 行，同时新增 6 个共享模块和 77 个测试
+
